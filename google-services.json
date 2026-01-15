@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "537521857092",
+    "project_id": "pcmonitoring-2178d",
+    "storage_bucket": "pcmonitoring-2178d.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:537521857092:android:bb2fffba03e85e1b02d211",
+        "android_client_info": {
+          "package_name": "com.pcmonitoring.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDx61W7MCvbZz1jyXODy7Cp5SGCnQsqpGA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

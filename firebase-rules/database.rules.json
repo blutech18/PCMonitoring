@@ -1,0 +1,127 @@
+{
+  "rules": {
+    "users": {
+      ".read": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'admin'",
+      "$userId": {
+        ".read": "auth != null && (auth.uid === $userId || root.child('users').child(auth.uid).child('role').val() === 'admin')",
+        ".write": "auth != null && auth.uid === $userId",
+        "username": {
+          ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 50"
+        },
+        "email": {
+          ".validate": "newData.isString() && newData.val().matches(/^[^@]+@[^@]+\\.[^@]+$/)"
+        },
+        "role": {
+          ".write": "root.child('users').child(auth.uid).child('role').val() === 'admin'",
+          ".validate": "newData.isString() && (newData.val() === 'admin' || newData.val() === 'user')"
+        },
+        "createdAt": {
+          ".validate": "newData.isString()"
+        },
+        "settings": {
+          "sessionTimeLimit": {
+            ".validate": "newData.isNumber() && newData.val() >= 30 && newData.val() <= 480"
+          },
+          "alertThreshold": {
+            ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100"
+          },
+          "autoLogoutEnabled": {
+            ".validate": "newData.isBoolean()"
+          }
+        },
+        "agentCode": {
+          "code": {
+            ".validate": "newData.isString() && newData.val().length === 8"
+          },
+          "createdAt": {
+            ".validate": "newData.isString()"
+          },
+          "active": {
+            ".validate": "newData.isBoolean()"
+          }
+        },
+        "sessions": {
+          ".write": "true",
+          "active": {
+            "$sessionId": {
+              ".validate": "newData.hasChildren(['computerId', 'computerName', 'userId', 'userName', 'startTime', 'currentActivity'])"
+            }
+          },
+          "history": {
+            "$sessionId": {
+              ".validate": "newData.hasChildren(['computerId', 'computerName', 'userId', 'userName', 'startTime', 'endTime', 'totalDuration', 'date'])"
+            }
+          }
+        },
+        "computers": {
+          ".write": "true",
+          "$computerId": {
+            ".validate": "newData.hasChildren(['name', 'ipAddress', 'status', 'lastSeen'])",
+            "status": {
+              ".validate": "newData.isString() && (newData.val() === 'online' || newData.val() === 'offline' || newData.val() === 'maintenance')"
+            }
+          }
+        },
+        "notifications": {
+          "$notificationId": {
+            ".validate": "newData.hasChildren(['type', 'title', 'message', 'timestamp', 'read', 'acknowledged'])",
+            "type": {
+              ".validate": "newData.isString() && (newData.val() === 'long_usage' || newData.val() === 'system_issue' || newData.val() === 'network_issue' || newData.val() === 'general')"
+            },
+            "read": {
+              ".validate": "newData.isBoolean()"
+            },
+            "acknowledged": {
+              ".validate": "newData.isBoolean()"
+            }
+          }
+        },
+        "activities": {
+          ".write": "true",
+          "$activityId": {
+            ".validate": "newData.hasChildren() || !newData.exists()"
+          }
+        },
+        "websites": {
+          ".write": "true",
+          "$websiteId": {
+            ".validate": "newData.hasChildren() || !newData.exists()"
+          }
+        },
+        "reports": {
+          ".read": "auth != null && auth.uid === $userId"
+        }
+      }
+    },
+    "agentCodes": {
+      ".read": true,
+      "$code": {
+        ".write": "auth != null"
+      }
+    },
+    "systemSettings": {
+      ".read": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'admin'",
+      ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'admin'"
+    },
+    "auditLogs": {
+      ".read": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'admin'",
+      ".write": false
+    },
+    "sessions": {
+      ".read": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'admin'",
+      ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'admin'"
+    },
+    "computers": {
+      ".read": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'admin'",
+      ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'admin'"
+    },
+    "notifications": {
+      ".read": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'admin'",
+      ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'admin'"
+    },
+    "reports": {
+      ".read": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'admin'",
+      ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'admin'"
+    }
+  }
+}
