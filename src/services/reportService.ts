@@ -1,14 +1,20 @@
-import { ref, get, query, orderByChild, startAt, endAt } from 'firebase/database';
-import { database } from './firebase';
+import { ref, get } from 'firebase/database';
+import { database, auth } from './firebase';
 import { ReportData, ReportPeriod, ComputerUsage, UsageTrendItem, SessionHistoryRecord } from '../models/types';
-import { DB_PATHS } from '../config/firebase.config';
 
 export const reportService = {
     /**
      * Get report data for specified period
+     * IMPORTANT: This fetches user-specific data only (users/{userId}/sessions/history)
+     * Each user sees only their own sessions and usage data
      */
     getReportData: async (period: ReportPeriod): Promise<ReportData> => {
         try {
+            const userId = auth.currentUser?.uid;
+            if (!userId) {
+                throw new Error('User not authenticated');
+            }
+
             const now = new Date();
             let startDate: Date;
 
@@ -26,8 +32,10 @@ export const reportService = {
                     break;
             }
 
-            // Get session history
-            const historyRef = ref(database, DB_PATHS.sessions.history);
+            // Get session history - USER-SPECIFIC PATH
+            // Only fetches sessions belonging to the current user
+            const historyPath = `users/${userId}/sessions/history`;
+            const historyRef = ref(database, historyPath);
             const snapshot = await get(historyRef);
             const historyData = snapshot.val() || {};
 
@@ -96,14 +104,24 @@ export const reportService = {
 
     /**
      * Get report for custom date range
+     * IMPORTANT: This fetches user-specific data only (users/{userId}/sessions/history)
+     * Each user sees only their own sessions and usage data
      */
     getCustomReport: async (startDate: string, endDate: string): Promise<ReportData> => {
         try {
+            const userId = auth.currentUser?.uid;
+            if (!userId) {
+                throw new Error('User not authenticated');
+            }
+
             const start = new Date(startDate);
             const end = new Date(endDate);
             end.setHours(23, 59, 59, 999);
 
-            const historyRef = ref(database, DB_PATHS.sessions.history);
+            // Get session history - USER-SPECIFIC PATH
+            // Only fetches sessions belonging to the current user
+            const historyPath = `users/${userId}/sessions/history`;
+            const historyRef = ref(database, historyPath);
             const snapshot = await get(historyRef);
             const historyData = snapshot.val() || {};
 

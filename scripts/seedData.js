@@ -82,7 +82,7 @@ async function createUserProfile(userId, username, email, role) {
         settings: {
             sessionTimeLimit: 480,
             alertThreshold: 80,
-            autoLogoutEnabled: false,
+            autoLogoutEnabled: Boolean(false), // Ensure proper boolean type
         },
     });
 
@@ -93,7 +93,7 @@ async function createUserProfile(userId, username, email, role) {
         await set(agentCodeRef, {
             code: agentCode,
             createdAt: new Date().toISOString(),
-            active: true,
+            active: Boolean(true), // Ensure proper boolean type
         });
         console.log(`  ✓ Agent code generated: ${agentCode}`);
     }

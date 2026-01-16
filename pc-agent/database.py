@@ -176,7 +176,8 @@ class Database:
         
         start_time = datetime.fromisoformat(row['session_start'])
         end_time = datetime.now()
-        duration = int((end_time - start_time).total_seconds() / 60)
+        # Use max() to ensure at least 1 minute is recorded for any completed session
+        duration = max(1, round((end_time - start_time).total_seconds() / 60))
         
         cursor.execute('''
             UPDATE session_logs 

@@ -63,8 +63,6 @@ const AdminActiveSessionsScreen: React.FC = () => {
 
     useEffect(() => {
         fetchSessions();
-        const interval = setInterval(fetchSessions, APP_CONFIG.refreshInterval);
-        return () => clearInterval(interval);
     }, [fetchSessions]);
 
     useEffect(() => {

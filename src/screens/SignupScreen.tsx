@@ -15,6 +15,7 @@ import Input from '../components/common/Input';
 import Button from '../components/common/Button';
 import colors from '../constants/colors';
 import { validateEmail, validateRequired } from '../utils/validation';
+import { ensureBoolean } from '../utils/firebaseHelpers';
 
 interface SignupScreenProps {
     onNavigateToLogin: () => void;
@@ -78,7 +79,7 @@ const SignupScreen: React.FC<SignupScreenProps> = ({ onNavigateToLogin }) => {
                 settings: {
                     sessionTimeLimit: 480,
                     alertThreshold: 80,
-                    autoLogoutEnabled: false,
+                    autoLogoutEnabled: ensureBoolean(false),
                 },
             });
 
@@ -88,7 +89,7 @@ const SignupScreen: React.FC<SignupScreenProps> = ({ onNavigateToLogin }) => {
             await set(agentCodeRef, {
                 code: agentCode,
                 createdAt: new Date().toISOString(),
-                active: true,
+                active: ensureBoolean(true),
             });
 
             // Also write to public agentCodes lookup path for PC agent connection
@@ -96,7 +97,7 @@ const SignupScreen: React.FC<SignupScreenProps> = ({ onNavigateToLogin }) => {
             await set(publicCodeRef, {
                 userId: userId,
                 createdAt: new Date().toISOString(),
-                active: true,
+                active: ensureBoolean(true),
             });
 
             // User will be automatically logged in via onAuthStateChanged

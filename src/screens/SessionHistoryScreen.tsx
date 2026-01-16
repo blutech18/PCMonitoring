@@ -108,33 +108,55 @@ const SessionHistoryScreen: React.FC = () => {
         </View>
     );
 
-    const renderSessionItem = ({ item }: { item: SessionHistory }) => (
-        <TouchableOpacity onPress={() => handleSessionPress(item)}>
-            <Card style={styles.sessionCard}>
-                <View style={styles.sessionHeader}>
-                    <View>
-                        <Text style={styles.computerName}>{item.computerName}</Text>
-                        <Text style={styles.userName}>{item.userName}</Text>
+    const renderSessionItem = ({ item }: { item: SessionHistory }) => {
+        // Calculate actual duration with seconds from start and end times
+        const startTime = new Date(item.startTime);
+        const endTime = new Date(item.endTime);
+        const durationSeconds = Math.floor((endTime.getTime() - startTime.getTime()) / 1000);
+        
+        // Format duration with seconds
+        const formatDurationWithSeconds = (seconds: number): string => {
+            const hours = Math.floor(seconds / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+            const secs = seconds % 60;
+            
+            if (hours > 0) {
+                return `${hours}h ${minutes}m ${secs}s`;
+            } else if (minutes > 0) {
+                return `${minutes}m ${secs}s`;
+            } else {
+                return `${secs}s`;
+            }
+        };
+        
+        return (
+            <TouchableOpacity onPress={() => handleSessionPress(item)}>
+                <Card style={styles.sessionCard}>
+                    <View style={styles.sessionHeader}>
+                        <View>
+                            <Text style={styles.computerName}>{item.computerName}</Text>
+                            <Text style={styles.userName}>{item.userName}</Text>
+                        </View>
+                        <View style={styles.durationBadge}>
+                            <Text style={styles.durationText}>{formatDurationWithSeconds(durationSeconds)}</Text>
+                        </View>
                     </View>
-                    <View style={styles.durationBadge}>
-                        <Text style={styles.durationText}>{formatDuration(item.totalDuration)}</Text>
+                    <View style={styles.sessionDetails}>
+                        <View style={styles.detailItem}>
+                            <Text style={styles.detailLabel}>📅</Text>
+                            <Text style={styles.detailValue}>{formatDate(item.startTime)}</Text>
+                        </View>
+                        <View style={styles.detailItem}>
+                            <Text style={styles.detailLabel}>🕐</Text>
+                            <Text style={styles.detailValue}>
+                                {formatTime(item.startTime)} - {formatTime(item.endTime)}
+                            </Text>
+                        </View>
                     </View>
-                </View>
-                <View style={styles.sessionDetails}>
-                    <View style={styles.detailItem}>
-                        <Text style={styles.detailLabel}>📅</Text>
-                        <Text style={styles.detailValue}>{formatDate(item.startTime)}</Text>
-                    </View>
-                    <View style={styles.detailItem}>
-                        <Text style={styles.detailLabel}>🕐</Text>
-                        <Text style={styles.detailValue}>
-                            {formatTime(item.startTime)} - {formatTime(item.endTime)}
-                        </Text>
-                    </View>
-                </View>
-            </Card>
-        </TouchableOpacity>
-    );
+                </Card>
+            </TouchableOpacity>
+        );
+    };
 
     if (loading) {
         return <Loading fullScreen message="Loading session history..." />;

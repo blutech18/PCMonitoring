@@ -12,9 +12,51 @@ import { SessionDetail, RootStackParamList } from '../models/types';
 import Card from '../components/common/Card';
 import Loading from '../components/common/Loading';
 import colors from '../constants/colors';
-import { formatDateTime, formatDuration } from '../utils/helpers';
+import { formatDateTime } from '../utils/helpers';
 
 type SessionDetailsRouteProp = RouteProp<RootStackParamList, 'SessionDetails'>;
+
+// Helper function to format duration with seconds from start and end times
+const formatDurationWithSeconds = (startTime: string, endTime: string): string => {
+    const start = new Date(startTime);
+    const end = new Date(endTime);
+    const totalSeconds = Math.floor((end.getTime() - start.getTime()) / 1000);
+    
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    
+    if (hours > 0) {
+        return `${hours}h ${minutes}m ${seconds}s`;
+    } else if (minutes > 0) {
+        return `${minutes}m ${seconds}s`;
+    } else {
+        return `${seconds}s`;
+    }
+};
+
+// Helper function to format app duration (in minutes)
+const formatAppDuration = (durationMinutes: number): string => {
+    if (durationMinutes < 1) {
+        const seconds = Math.round(durationMinutes * 60);
+        return `${Math.max(1, seconds)} sec`;
+    }
+    
+    const totalMinutes = Math.floor(durationMinutes);
+    const seconds = Math.round((durationMinutes - totalMinutes) * 60);
+    
+    if (totalMinutes < 60) {
+        return seconds > 0 ? `${totalMinutes}m ${seconds}s` : `${totalMinutes}m`;
+    }
+    
+    const hours = Math.floor(totalMinutes / 60);
+    const mins = totalMinutes % 60;
+    
+    if (mins > 0) {
+        return `${hours}h ${mins}m`;
+    }
+    return `${hours}h`;
+};
 
 const SessionDetailsScreen: React.FC = () => {
     const route = useRoute<SessionDetailsRouteProp>();
@@ -77,7 +119,7 @@ const SessionDetailsScreen: React.FC = () => {
 
                 <View style={styles.durationContainer}>
                     <Text style={styles.durationLabel}>Total Duration</Text>
-                    <Text style={styles.durationValue}>{formatDuration(session.totalDuration)}</Text>
+                    <Text style={styles.durationValue}>{formatDurationWithSeconds(session.startTime, session.endTime)}</Text>
                 </View>
             </Card>
 
@@ -86,17 +128,17 @@ const SessionDetailsScreen: React.FC = () => {
                 <Text style={styles.sectionTitle}>Applications Accessed</Text>
 
                 {session.applicationsAccessed.length === 0 ? (
-                    <Text style={styles.emptyText}>No applications recorded</Text>
+                    <Text style={styles.emptyText}>No applications recorded for this session</Text>
                 ) : (
                     session.applicationsAccessed.map((app, index) => (
-                        <View key={index} style={styles.appItem}>
+                        <View key={index} style={[styles.appItem, index === session.applicationsAccessed.length - 1 && styles.lastItem]}>
                             <View style={styles.appIcon}>
                                 <MaterialCommunityIcons name="application" size={20} color={colors.primary} />
                             </View>
                             <View style={styles.appInfo}>
                                 <Text style={styles.appName}>{app.name}</Text>
                                 <Text style={styles.appDuration}>
-                                    Used for {formatDuration(app.duration)}
+                                    Used for {formatAppDuration(app.duration)}
                                 </Text>
                             </View>
                         </View>
@@ -112,15 +154,17 @@ const SessionDetailsScreen: React.FC = () => {
                     <Text style={styles.emptyText}>No files edited during this session</Text>
                 ) : (
                     session.filesEdited.map((file, index) => (
-                        <View key={index} style={styles.fileItem}>
+                        <View key={index} style={[styles.fileItem, index === session.filesEdited.length - 1 && styles.lastItem]}>
                             <View style={styles.fileIcon}>
                                 <Ionicons name="document-text-outline" size={20} color={colors.secondary} />
                             </View>
                             <View style={styles.fileInfo}>
                                 <Text style={styles.fileName}>{file.fileName}</Text>
-                                <Text style={styles.filePath} numberOfLines={1}>
-                                    {file.filePath}
-                                </Text>
+                                {file.filePath ? (
+                                    <Text style={styles.filePath} numberOfLines={1}>
+                                        {file.filePath}
+                                    </Text>
+                                ) : null}
                                 <Text style={styles.fileDetails}>
                                     Edited with {file.application}
                                 </Text>
@@ -234,6 +278,9 @@ const styles = StyleSheet.create({
         fontSize: 13,
         color: colors.textSecondary,
         marginTop: 2,
+    },
+    lastItem: {
+        borderBottomWidth: 0,
     },
     fileItem: {
         flexDirection: 'row',

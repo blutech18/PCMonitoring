@@ -159,6 +159,20 @@ class LocalDatabase:
             )
         ''')
         
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS file_edits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                computer_id TEXT NOT NULL,
+                username TEXT NOT NULL,
+                file_name TEXT NOT NULL,
+                file_path TEXT,
+                application TEXT NOT NULL,
+                edit_time TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                synced INTEGER DEFAULT 0
+            )
+        ''')
+        
         conn.commit()
     
     def get_computer_id(self):
@@ -190,7 +204,43 @@ class LocalDatabase:
         cursor.execute('INSERT INTO user_link (user_id) VALUES (?)', (user_id,))
         self._get_connection().commit()
     
+    def clear_linked_user(self):
+        """Remove the linked user and all monitoring data from database (for disconnect/logout)"""
+        cursor = self._get_connection().cursor()
+        # Clear user link
+        cursor.execute('DELETE FROM user_link')
+        # Clear all session data so new account starts fresh
+        cursor.execute('DELETE FROM session_logs')
+        cursor.execute('DELETE FROM application_logs')
+        cursor.execute('DELETE FROM file_edits')
+        # Clear computer registration so it registers as new for the new user
+        cursor.execute('DELETE FROM computer')
+        self._get_connection().commit()
+        logger.info("Cleared all local data for account switch")
+    
+    def close_stale_sessions(self):
+        """Close any orphaned sessions that were never properly ended (from crashes/kills)"""
+        cursor = self._get_connection().cursor()
+        # Find all sessions without an end time and close them
+        cursor.execute('SELECT id, session_start FROM session_logs WHERE session_end IS NULL')
+        stale_sessions = cursor.fetchall()
+        
+        if stale_sessions:
+            for session in stale_sessions:
+                session_id = session['id']
+                start_time = datetime.fromisoformat(session['session_start'])
+                # End the session at the start time (0 duration) since we don't know when it actually ended
+                cursor.execute('''
+                    UPDATE session_logs SET session_end = ?, duration_minutes = 0, synced = 1 WHERE id = ?
+                ''', (start_time.isoformat(), session_id))
+            
+            self._get_connection().commit()
+            logger.info(f"Closed {len(stale_sessions)} stale sessions")
+    
     def log_session_start(self, computer_id, username):
+        # First, close any stale sessions from previous runs
+        self.close_stale_sessions()
+        
         cursor = self._get_connection().cursor()
         cursor.execute('''
             INSERT INTO session_logs (computer_id, username, session_start, synced)
@@ -256,6 +306,34 @@ class LocalDatabase:
             SELECT * FROM application_logs WHERE synced = 0 AND end_time IS NOT NULL LIMIT ?
         ''', (limit,))
         return [dict(row) for row in cursor.fetchall()]
+    
+    def log_file_edit(self, computer_id, username, file_name, file_path, application):
+        """Log a file being edited"""
+        cursor = self._get_connection().cursor()
+        cursor.execute('''
+            INSERT INTO file_edits 
+            (computer_id, username, file_name, file_path, application, edit_time, synced)
+            VALUES (?, ?, ?, ?, ?, ?, 0)
+        ''', (computer_id, username, file_name, file_path, application, datetime.now().isoformat()))
+        self._get_connection().commit()
+        return cursor.lastrowid
+    
+    def get_unsynced_file_edits(self, limit=100):
+        """Get unsynced file edits"""
+        cursor = self._get_connection().cursor()
+        cursor.execute('''
+            SELECT * FROM file_edits WHERE synced = 0 LIMIT ?
+        ''', (limit,))
+        return [dict(row) for row in cursor.fetchall()]
+    
+    def mark_file_edits_synced(self, ids):
+        """Mark file edits as synced"""
+        if not ids:
+            return
+        cursor = self._get_connection().cursor()
+        placeholders = ','.join('?' * len(ids))
+        cursor.execute(f'UPDATE file_edits SET synced = 1 WHERE id IN ({placeholders})', ids)
+        self._get_connection().commit()
     
     def mark_sessions_synced(self, ids):
         if not ids:
@@ -402,10 +480,53 @@ class FirebaseSync:
             logger.error(f"Error looking up user: {e}")
             return False
     
-    def sync_all(self):
+    def clear_firebase_data(self):
+        """Clear all data from Firebase for the current user (used when switching accounts)"""
+        if not self.user_id:
+            logger.info("No user ID - skipping Firebase cleanup")
+            return False
+        
+        if not self.has_requests or self.offline_mode:
+            logger.info("Offline mode - can't clear Firebase data")
+            return False
+        
+        try:
+            # Delete all computers
+            self._firebase_put(f"users/{self.user_id}/computers", None)
+            
+            # Delete all active sessions  
+            self._firebase_put(f"users/{self.user_id}/sessions/active", None)
+            
+            # Delete session history
+            self._firebase_put(f"users/{self.user_id}/sessions/history", None)
+            
+            logger.info(f"Cleared all Firebase data for user {self.user_id[:8]}...")
+            return True
+        except Exception as e:
+            logger.error(f"Error clearing Firebase data: {e}")
+            return False
+    
+    def clear_active_sessions(self):
+        """Clear only active sessions from Firebase (called on monitoring start to prevent stale sessions)"""
+        if not self.user_id:
+            return False
+        
+        if not self.has_requests or self.offline_mode:
+            return False
+        
+        try:
+            # Only delete active sessions, preserve computers and history
+            self._firebase_put(f"users/{self.user_id}/sessions/active", None)
+            logger.info("Cleared stale active sessions from Firebase")
+            return True
+        except Exception as e:
+            logger.error(f"Error clearing active sessions: {e}")
+            return False
+    
+    def sync_all(self, current_activity: str = None):
         """Sync all data with offline handling and auto-retry - optimized for real-time"""
         self.last_sync_attempt = datetime.now()
-        results = {'sessions': 0, 'active_sessions': 0, 'applications': 0, 'offline': self.offline_mode}
+        results = {'sessions': 0, 'active_sessions': 0, 'applications': 0, 'file_edits': 0, 'offline': self.offline_mode}
         
         # If offline, try to reconnect periodically
         if self.offline_mode:
@@ -458,7 +579,7 @@ class FirebaseSync:
                     'userId': session['username'],
                     'userName': session['username'],
                     'startTime': session['session_start'],
-                    'currentActivity': 'Monitoring',
+                    'currentActivity': current_activity or 'Idle',
                     'status': 'active'
                 }
                 
@@ -479,7 +600,7 @@ class FirebaseSync:
                     'userName': session['username'],
                     'startTime': session['session_start'],
                     'endTime': session['session_end'],
-                    'totalDuration': (session['duration_minutes'] or 0) * 60,
+                    'totalDuration': session['duration_minutes'] or 0,  # in minutes (not seconds)
                     'date': session['session_start'].split('T')[0],
                     'status': 'completed'
                 }
@@ -521,6 +642,28 @@ class FirebaseSync:
             self.database.mark_applications_synced(synced_app_ids)
             results['applications'] = len(synced_app_ids)
             
+            # Sync file edits
+            file_edits = self.database.get_unsynced_file_edits()
+            synced_file_ids = []
+            
+            for file_edit in file_edits:
+                file_edit_id = f"{computer_id}_{file_edit['id']}"
+                file_edit_data = {
+                    'computerId': file_edit['computer_id'],
+                    'fileName': file_edit['file_name'],
+                    'filePath': file_edit['file_path'] or '',
+                    'application': file_edit['application'],
+                    'editTime': file_edit['edit_time'],
+                    'username': file_edit['username']
+                }
+                
+                path = f"users/{self.user_id}/fileEdits/{file_edit_id}"
+                if self._firebase_put(path, file_edit_data):
+                    synced_file_ids.append(file_edit['id'])
+            
+            self.database.mark_file_edits_synced(synced_file_ids)
+            results['file_edits'] = len(synced_file_ids)
+            
             # Update computer status only every 30 seconds to reduce writes
             should_update_status = (
                 self.last_status_update is None or
@@ -539,7 +682,7 @@ class FirebaseSync:
             self.sync_failures = 0
             
             # Only log when there's actual data synced
-            if results['sessions'] > 0 or results['applications'] > 0 or results['active_sessions'] > 0:
+            if results['sessions'] > 0 or results['applications'] > 0 or results['active_sessions'] > 0 or results['file_edits'] > 0:
                 parts = []
                 if results['active_sessions'] > 0:
                     parts.append(f"{results['active_sessions']} active")
@@ -547,6 +690,8 @@ class FirebaseSync:
                     parts.append(f"{results['sessions']} completed")
                 if results['applications'] > 0:
                     parts.append(f"{results['applications']} apps")
+                if results['file_edits'] > 0:
+                    parts.append(f"{results['file_edits']} files")
                 logger.info(f"Synced: {', '.join(parts)}")
             
         except Exception as e:
@@ -567,10 +712,16 @@ class MonitoringAgent:
         self.current_session_id = None
         self.current_app_log_id = None
         self.last_app = None
+        self.current_activity = 'Idle'  # Track current activity for display
         self.computer_id = database.get_computer_id()
+        self.tracked_files = set()  # Track files already logged this session
     
     def start(self):
         self.running = True
+        
+        # Clear any stale active sessions from Firebase first
+        self.sync.clear_active_sessions()
+        
         self.current_session_id = self.database.log_session_start(
             self.computer_id,
             os.environ.get('USERNAME', 'Unknown')
@@ -587,6 +738,26 @@ class MonitoringAgent:
             self.database.log_session_end(self.current_session_id)
         if self.current_app_log_id:
             self.database.update_application_end(self.current_app_log_id)
+        
+        # CRITICAL: Immediately sync to Firebase to move session to history
+        try:
+            import time
+            from datetime import datetime
+            logger.info("Performing final sync to move session to history...")
+            self.sync.sync_all()
+            # Small delay to ensure sync completes
+            time.sleep(0.5)
+            # Update computer status to offline
+            if self.sync.user_id:
+                computer_path = f"users/{self.sync.user_id}/computers/{self.computer_id}"
+                self.sync._firebase_patch(computer_path, {
+                    'status': 'offline',
+                    'lastSeen': datetime.now().isoformat()
+                })
+            logger.info("Session moved to history and computer marked offline")
+        except Exception as e:
+            logger.error(f"Error in final sync: {e}")
+        
         logger.info("Monitoring stopped")
     
     def _monitor_loop(self):
@@ -600,7 +771,7 @@ class MonitoringAgent:
     def _sync_loop(self):
         while self.running:
             try:
-                results = self.sync.sync_all()
+                results = self.sync.sync_all(current_activity=self.current_activity)
                 # Logging is now handled inside sync_all for real-time updates
             except Exception as e:
                 logger.error(f"Sync loop error: {e}")
@@ -630,6 +801,9 @@ class MonitoringAgent:
             except:
                 app_name = "Unknown"
             
+            # Format user-friendly activity string
+            self.current_activity = self._format_activity(app_name, window_title)
+            
             # Check if app changed
             current_app = f"{app_name}|{window_title}"
             if current_app != self.last_app:
@@ -646,8 +820,241 @@ class MonitoringAgent:
                 )
                 self.last_app = current_app
                 
+                # Track file edits from window title
+                self._track_file_edit(app_name, window_title)
+                
         except Exception as e:
             logger.error(f"App check error: {e}")
+    
+    def _track_file_edit(self, app_name: str, window_title: str):
+        """Extract and track file being edited from window title"""
+        if not window_title or not app_name:
+            return
+        
+        file_info = self._extract_file_info(app_name, window_title)
+        if file_info:
+            file_name, file_path, clean_app_name = file_info
+            
+            # Create a unique key to avoid duplicate entries for same file
+            file_key = f"{file_name}|{file_path}|{clean_app_name}"
+            
+            if file_key not in self.tracked_files:
+                self.tracked_files.add(file_key)
+                self.database.log_file_edit(
+                    self.computer_id,
+                    os.environ.get('USERNAME', 'Unknown'),
+                    file_name,
+                    file_path,
+                    clean_app_name
+                )
+                logger.info(f"Tracked file edit: {file_name} in {clean_app_name}")
+    
+    def _extract_file_info(self, app_name: str, window_title: str):
+        """Extract file name and path from window title based on application"""
+        import re
+        
+        app_lower = app_name.lower()
+        title = window_title.strip()
+        
+        # Common file extensions to detect
+        file_extensions = (
+            '.txt', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+            '.pdf', '.py', '.js', '.ts', '.tsx', '.jsx', '.html', '.css',
+            '.json', '.xml', '.csv', '.md', '.java', '.cpp', '.c', '.h',
+            '.cs', '.php', '.rb', '.go', '.rs', '.swift', '.kt', '.sql',
+            '.sh', '.bat', '.ps1', '.yaml', '.yml', '.ini', '.cfg', '.conf'
+        )
+        
+        file_name = None
+        file_path = None
+        clean_app_name = None
+        
+        # VS Code: "filename.ext - FolderName - Visual Studio Code"
+        if 'code.exe' in app_lower or 'code - insiders' in app_lower:
+            clean_app_name = 'Visual Studio Code'
+            # Pattern: filename - folder - Visual Studio Code
+            match = re.match(r'^(.+?)\s+-\s+(.+?)\s+-\s+Visual Studio Code', title)
+            if match:
+                file_name = match.group(1).strip()
+                file_path = match.group(2).strip()
+            elif ' - Visual Studio Code' in title:
+                file_name = title.replace(' - Visual Studio Code', '').strip()
+        
+        # Notepad: "filename.txt - Notepad" or "*filename.txt - Notepad" (unsaved)
+        elif 'notepad.exe' in app_lower:
+            clean_app_name = 'Notepad'
+            match = re.match(r'^\*?(.+?)\s+-\s+Notepad', title)
+            if match:
+                file_name = match.group(1).strip()
+        
+        # Notepad++: "filename.ext - Notepad++" or with path
+        elif 'notepad++' in app_lower:
+            clean_app_name = 'Notepad++'
+            match = re.match(r'^\*?(.+?)\s+-\s+Notepad\+\+', title)
+            if match:
+                potential_path = match.group(1).strip()
+                if '\\' in potential_path or '/' in potential_path:
+                    file_path = potential_path
+                    file_name = potential_path.split('\\')[-1].split('/')[-1]
+                else:
+                    file_name = potential_path
+        
+        # Microsoft Word: "Document1 - Word" or "filename.docx - Word"
+        elif 'winword.exe' in app_lower:
+            clean_app_name = 'Microsoft Word'
+            match = re.match(r'^(.+?)\s+-\s+(?:Word|Microsoft Word)', title)
+            if match:
+                file_name = match.group(1).strip()
+                if not file_name.lower().endswith(('.doc', '.docx')):
+                    file_name = file_name + '.docx'
+        
+        # Microsoft Excel: "Book1 - Excel" or "filename.xlsx - Excel"
+        elif 'excel.exe' in app_lower:
+            clean_app_name = 'Microsoft Excel'
+            match = re.match(r'^(.+?)\s+-\s+(?:Excel|Microsoft Excel)', title)
+            if match:
+                file_name = match.group(1).strip()
+                if not file_name.lower().endswith(('.xls', '.xlsx', '.csv')):
+                    file_name = file_name + '.xlsx'
+        
+        # Microsoft PowerPoint
+        elif 'powerpnt.exe' in app_lower:
+            clean_app_name = 'Microsoft PowerPoint'
+            match = re.match(r'^(.+?)\s+-\s+(?:PowerPoint|Microsoft PowerPoint)', title)
+            if match:
+                file_name = match.group(1).strip()
+                if not file_name.lower().endswith(('.ppt', '.pptx')):
+                    file_name = file_name + '.pptx'
+        
+        # Sublime Text: "filename.ext - Sublime Text" or "filename.ext (folder) - Sublime Text"
+        elif 'sublime_text.exe' in app_lower:
+            clean_app_name = 'Sublime Text'
+            match = re.match(r'^(.+?)(?:\s+\(.+?\))?\s+-\s+Sublime Text', title)
+            if match:
+                file_name = match.group(1).strip()
+        
+        # Visual Studio: "filename.ext - ProjectName - Microsoft Visual Studio"
+        elif 'devenv.exe' in app_lower:
+            clean_app_name = 'Visual Studio'
+            match = re.match(r'^(.+?)\s+-\s+(.+?)\s+-\s+Microsoft Visual Studio', title)
+            if match:
+                file_name = match.group(1).strip()
+                file_path = match.group(2).strip()  # Project name
+        
+        # PyCharm/IntelliJ: "filename.ext - ProjectName - PyCharm/IntelliJ"
+        elif 'pycharm' in app_lower or 'idea' in app_lower:
+            clean_app_name = 'PyCharm' if 'pycharm' in app_lower else 'IntelliJ IDEA'
+            match = re.match(r'^(.+?)\s+[-–]\s+(.+?)\s+[-–]', title)
+            if match:
+                file_name = match.group(1).strip()
+                file_path = match.group(2).strip()
+        
+        # Generic: Try to find any file with known extension in title
+        if not file_name:
+            for ext in file_extensions:
+                # Look for filename.ext pattern
+                pattern = rf'([\w\-\.\s]+{re.escape(ext)})'
+                match = re.search(pattern, title, re.IGNORECASE)
+                if match:
+                    file_name = match.group(1).strip()
+                    clean_app_name = clean_app_name or app_name.replace('.exe', '')
+                    break
+        
+        # Only return if we found a valid file name
+        if file_name and clean_app_name:
+            # Clean up the file name
+            file_name = file_name.lstrip('*')  # Remove unsaved indicator
+            return (file_name, file_path or '', clean_app_name)
+        
+        return None
+    
+    def _format_activity(self, app_name: str, window_title: str) -> str:
+        """Format a user-friendly activity message based on app name and window title"""
+        if not app_name or app_name == "Unknown":
+            return "Idle"
+        
+        app_lower = app_name.lower()
+        title = window_title[:100] if window_title else ''
+        
+        # Browser apps
+        if 'chrome.exe' in app_lower:
+            return f"Google Chrome: {title}" if title else "Using Google Chrome"
+        elif 'msedge.exe' in app_lower:
+            return f"Microsoft Edge: {title}" if title else "Using Microsoft Edge"
+        elif 'firefox.exe' in app_lower:
+            return f"Firefox: {title}" if title else "Using Firefox"
+        elif 'opera.exe' in app_lower or 'opera_gx' in app_lower:
+            return f"Opera: {title}" if title else "Using Opera"
+        elif 'brave.exe' in app_lower:
+            return f"Brave: {title}" if title else "Using Brave"
+        
+        # Microsoft Office apps
+        elif 'winword.exe' in app_lower or 'word' in app_lower:
+            return f"Editing Word Document: {title}" if title else "Using Microsoft Word"
+        elif 'excel.exe' in app_lower:
+            return f"Working in Excel: {title}" if title else "Using Microsoft Excel"
+        elif 'powerpnt.exe' in app_lower:
+            return f"PowerPoint: {title}" if title else "Using PowerPoint"
+        elif 'outlook.exe' in app_lower:
+            return f"Outlook: {title}" if title else "Using Outlook"
+        elif 'onenote.exe' in app_lower:
+            return f"OneNote: {title}" if title else "Using OneNote"
+        elif 'teams.exe' in app_lower:
+            return f"Microsoft Teams: {title}" if title else "Using Microsoft Teams"
+        
+        # Development tools
+        elif 'code.exe' in app_lower or 'code - insiders' in app_lower:
+            return f"VS Code: {title}" if title else "Using Visual Studio Code"
+        elif 'devenv.exe' in app_lower:
+            return f"Visual Studio: {title}" if title else "Using Visual Studio"
+        elif 'idea64.exe' in app_lower or 'idea.exe' in app_lower:
+            return f"IntelliJ IDEA: {title}" if title else "Using IntelliJ IDEA"
+        elif 'pycharm' in app_lower:
+            return f"PyCharm: {title}" if title else "Using PyCharm"
+        elif 'sublime_text.exe' in app_lower:
+            return f"Sublime Text: {title}" if title else "Using Sublime Text"
+        elif 'notepad++.exe' in app_lower:
+            return f"Notepad++: {title}" if title else "Using Notepad++"
+        elif 'notepad.exe' in app_lower:
+            return f"Notepad: {title}" if title else "Using Notepad"
+        
+        # Communication apps
+        elif 'discord.exe' in app_lower:
+            return f"Discord: {title}" if title else "Using Discord"
+        elif 'slack.exe' in app_lower:
+            return f"Slack: {title}" if title else "Using Slack"
+        elif 'zoom.exe' in app_lower:
+            return f"Zoom: {title}" if title else "Using Zoom"
+        elif 'skype.exe' in app_lower:
+            return f"Skype: {title}" if title else "Using Skype"
+        
+        # System apps
+        elif 'explorer.exe' in app_lower:
+            return f"File Explorer: {title}" if title else "Using File Explorer"
+        elif 'cmd.exe' in app_lower:
+            return "Using Command Prompt"
+        elif 'powershell.exe' in app_lower or 'pwsh.exe' in app_lower:
+            return "Using PowerShell"
+        elif 'windowsterminal.exe' in app_lower:
+            return f"Windows Terminal: {title}" if title else "Using Windows Terminal"
+        
+        # Media apps
+        elif 'spotify.exe' in app_lower:
+            return f"Spotify: {title}" if title else "Using Spotify"
+        elif 'vlc.exe' in app_lower:
+            return f"VLC: {title}" if title else "Using VLC"
+        
+        # Gaming
+        elif 'steam.exe' in app_lower:
+            return f"Steam: {title}" if title else "Using Steam"
+        
+        # Default: show app name with title
+        else:
+            # Clean up the app name (remove .exe)
+            clean_name = app_name.replace('.exe', '').replace('.EXE', '')
+            if title:
+                return f"{clean_name}: {title}"
+            return f"Using {clean_name}"
 
 
 class PCMonitorApp:
@@ -682,7 +1089,7 @@ class PCMonitorApp:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("PC Monitoring Agent")
-        self.root.geometry("480x580")
+        self.root.geometry("480x650")
         self.root.resizable(False, False)
         self.root.configure(bg=self.COLORS['bg'])
         
@@ -1058,7 +1465,24 @@ class PCMonitorApp:
             padx=20, pady=12,
             bd=0
         )
-        settings_btn.pack(fill=tk.X)
+        settings_btn.pack(fill=tk.X, pady=(0, 8))
+        
+        # Disconnect Account button
+        disconnect_btn = tk.Button(
+            btn_frame,
+            text="🔓  Switch Account",
+            command=self.disconnect_account,
+            font=('Segoe UI', 11),
+            bg=self.COLORS['bg_secondary'],
+            fg=self.COLORS['error'],
+            activebackground=self.COLORS['error_bg'],
+            activeforeground=self.COLORS['error'],
+            relief='flat',
+            cursor='hand2',
+            padx=20, pady=12,
+            bd=0
+        )
+        disconnect_btn.pack(fill=tk.X)
         
         # Hover effects
         def on_start_enter(e):
@@ -1077,6 +1501,8 @@ class PCMonitorApp:
         self.start_btn.bind('<Leave>', on_start_leave)
         settings_btn.bind('<Enter>', lambda e: settings_btn.config(bg=self.COLORS['bg_hover']))
         settings_btn.bind('<Leave>', lambda e: settings_btn.config(bg=self.COLORS['bg_secondary']))
+        disconnect_btn.bind('<Enter>', lambda e: disconnect_btn.config(bg=self.COLORS['error_bg']))
+        disconnect_btn.bind('<Leave>', lambda e: disconnect_btn.config(bg=self.COLORS['bg_secondary']))
         
         # Auto-start if configured
         if self.config.get('auto_start', True):
@@ -1113,6 +1539,47 @@ class PCMonitorApp:
                 "• You have internet connection\n"
                 "• The code has not expired"
             )
+    
+    def disconnect_account(self):
+        """Disconnect from current account and allow switching to a new one"""
+        # Confirm with user
+        if not messagebox.askyesno(
+            "Switch Account",
+            "Are you sure you want to disconnect from the current account?\n\n"
+            "This will:\n"
+            "• Stop monitoring\n"
+            "• Clear all session data from the cloud\n"
+            "• Clear local data\n"
+            "• Allow you to enter a new linking code"
+        ):
+            return
+        
+        # Stop monitoring if running
+        if self.monitoring:
+            self.stop_monitoring()
+        
+        # Clear Firebase data first (while we still have user_id)
+        self.sync.clear_firebase_data()
+        
+        # Clear linked user from database (also clears local session data)
+        self.database.clear_linked_user()
+        
+        # Reset config
+        self.config['linking_code'] = ''
+        self.config['user_id'] = ''
+        ConfigManager.save(self.config)
+        
+        # Reset sync
+        self.sync = FirebaseSync(self.config, self.database)
+        
+        # Reset linking code variable
+        self.linking_code.set('')
+        
+        logger.info("Disconnected from account and cleared all data")
+        
+        # Show setup screen
+        self.create_setup_screen()
+        messagebox.showinfo("Disconnected", "Account disconnected and all data cleared.\nEnter a new linking code to connect to another account.")
     
     def toggle_monitoring(self):
         if self.monitoring:

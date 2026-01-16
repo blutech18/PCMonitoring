@@ -23,6 +23,7 @@ const ReportsScreen: React.FC = () => {
     const [refreshing, setRefreshing] = useState(false);
     const [selectedPeriod, setSelectedPeriod] = useState<ReportPeriod>('weekly');
 
+    // Fetch user-specific report data (each user sees only their own data)
     const fetchReport = useCallback(async () => {
         try {
             const data = await reportService.getReportData(selectedPeriod);

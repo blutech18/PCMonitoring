@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useCallback, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useCallback, useMemo, ReactNode } from 'react';
 
 interface NavigationContextType {
     activeScreen: string;
@@ -7,10 +7,10 @@ interface NavigationContextType {
 
 const NavigationContext = createContext<NavigationContextType | undefined>(undefined);
 
-export const useNavigation = (): NavigationContextType => {
+export const useAppNavigation = (): NavigationContextType => {
     const context = useContext(NavigationContext);
     if (!context) {
-        throw new Error('useNavigation must be used within a NavigationProvider');
+        throw new Error('useAppNavigation must be used within a NavigationProvider');
     }
     return context;
 };
@@ -33,8 +33,10 @@ export const NavigationProvider: React.FC<NavigationProviderProps> = ({
         onScreenChange?.(screen);
     }, [onScreenChange]);
 
+    const value = useMemo(() => ({ activeScreen, navigate }), [activeScreen, navigate]);
+
     return (
-        <NavigationContext.Provider value={{ activeScreen, navigate }}>
+        <NavigationContext.Provider value={value}>
             {children}
         </NavigationContext.Provider>
     );

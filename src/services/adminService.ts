@@ -2,6 +2,7 @@ import { ref, get, query, orderByChild } from 'firebase/database';
 import { database } from './firebase';
 import { User, ActiveSession, SessionHistory, DashboardStats, ActiveSessionRecord, SessionHistoryRecord, Notification } from '../models/types';
 import { DB_PATHS, USER_DATA_PATHS } from '../config/firebase.config';
+import { isComputerOnline } from '../utils/helpers';
 
 /**
  * Admin Service - Provides system-wide data access for admin users
@@ -54,13 +55,33 @@ export const adminService = {
             for (const [userId, userData] of Object.entries(usersData)) {
                 const userDataTyped = userData as any;
 
-                // Count active sessions
+                // Get computers data to check online status
+                const computersData = userDataTyped.computers || {};
+
+                // Get active sessions and filter by online computers
                 const activeSessions = userDataTyped.sessions?.active || {};
-                const activeCount = Object.keys(activeSessions).length;
+                const onlineSessions = Object.values(activeSessions).filter((session: any) => {
+                    // Find computer by name or ID
+                    const computer = Object.values(computersData).find(
+                        (c: any) => c.name && session.computerName &&
+                            (c.name === session.computerName || c.name.includes(session.computerName))
+                    ) as any;
+
+                    const computerById = computersData[session.computerId];
+                    const targetComputer = computerById || computer;
+
+                    if (targetComputer && targetComputer.lastSeen) {
+                        return isComputerOnline(targetComputer.lastSeen);
+                    }
+
+                    return false;
+                });
+
+                const activeCount = onlineSessions.length;
                 totalActiveComputers += activeCount;
 
-                // Track unique users with active sessions
-                Object.values(activeSessions).forEach((session: any) => {
+                // Track unique users with active (online) sessions
+                onlineSessions.forEach((session: any) => {
                     uniqueUsers.add(session.userId);
                 });
 
@@ -74,7 +95,11 @@ export const adminService = {
                 // Count unacknowledged alerts
                 const notifications = userDataTyped.notifications || {};
                 const alertCount = Object.values(notifications).filter(
-                    (n: any) => !n.acknowledged
+                    (n: any) => {
+                        // Import toBoolean helper at top of file if needed
+                        const acknowledged = n.acknowledged === true || n.acknowledged === 'true';
+                        return !acknowledged;
+                    }
                 ).length;
                 totalAlerts += alertCount;
             }

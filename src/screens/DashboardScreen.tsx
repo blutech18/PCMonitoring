@@ -10,8 +10,7 @@ import {
     Platform,
     useWindowDimensions,
 } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
-import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { useAppNavigation } from '../context/NavigationContext';
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { useAuth } from '../context/AuthContext';
 import sessionService from '../services/sessionService';
@@ -20,7 +19,6 @@ import notificationService from '../services/notificationService';
 import { DashboardStats } from '../models/types';
 import Loading from '../components/common/Loading';
 import colors from '../constants/colors';
-import { APP_CONFIG } from '../constants/config';
 
 // Animated Stat Card Component
 const AnimatedStatCard: React.FC<{
@@ -146,50 +144,79 @@ const ActionCard: React.FC<{
 const DashboardScreen: React.FC = () => {
     const { user } = useAuth();
     const { width } = useWindowDimensions();
-    const navigation = useNavigation<NativeStackNavigationProp<any>>();
+    const { navigate } = useAppNavigation();
     const [stats, setStats] = useState<DashboardStats | null>(null);
     const [unreadCount, setUnreadCount] = useState(0);
     const [loading, setLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
-    
+
     const headerFade = useRef(new Animated.Value(0)).current;
     const isLargeScreen = width >= 768;
 
-    const fetchData = useCallback(async () => {
+    // For admin users, we use polling since they need system-wide stats
+    const fetchAdminData = useCallback(async () => {
         try {
-            const isAdmin = user?.role === 'admin';
-            
-            // Admin sees system-wide stats, user sees only their own
             const [statsData, notifCount] = await Promise.all([
-                isAdmin ? adminService.getSystemDashboardStats() : sessionService.getDashboardStats(),
+                adminService.getSystemDashboardStats(),
                 notificationService.getUnreadCount(),
             ]);
             setStats(statsData);
             setUnreadCount(notifCount);
         } catch (error) {
-            console.error('Error fetching dashboard data:', error);
+            console.error('Error fetching admin dashboard data:', error);
         } finally {
             setLoading(false);
             setRefreshing(false);
         }
-    }, [user?.role]);
+    }, []);
 
     useEffect(() => {
-        fetchData();
         Animated.timing(headerFade, {
             toValue: 1,
             duration: 600,
             useNativeDriver: true,
         }).start();
 
-        const interval = setInterval(fetchData, APP_CONFIG.refreshInterval);
-        return () => clearInterval(interval);
-    }, [fetchData]);
+        const isAdmin = user?.role === 'admin';
+
+        if (isAdmin) {
+            // Admin: fetch once on load (pull-to-refresh for updates)
+            fetchAdminData();
+        } else {
+            // Regular user: use real-time Firebase subscriptions
+            const unsubscribeStats = sessionService.subscribeToDashboardStats((statsData) => {
+                setStats(statsData);
+                setLoading(false);
+                setRefreshing(false);
+            });
+
+            // Fetch notification count once (use pull-to-refresh for updates)
+            const fetchNotifications = async () => {
+                try {
+                    const notifCount = await notificationService.getUnreadCount();
+                    setUnreadCount(notifCount);
+                } catch (error) {
+                    console.error('Error fetching notifications:', error);
+                }
+            };
+            fetchNotifications();
+
+            return () => {
+                unsubscribeStats();
+            };
+        }
+    }, [user?.role, fetchAdminData, headerFade]);
 
     const onRefresh = useCallback(() => {
         setRefreshing(true);
-        fetchData();
-    }, [fetchData]);
+        if (user?.role === 'admin') {
+            fetchAdminData();
+        } else {
+            // For regular users, real-time subscription will update automatically
+            // Just reset refreshing state after a short delay
+            setTimeout(() => setRefreshing(false), 500);
+        }
+    }, [user?.role, fetchAdminData]);
 
     if (loading) {
         return <Loading fullScreen message="Loading dashboard..." />;
@@ -210,8 +237,8 @@ const DashboardScreen: React.FC = () => {
                 isLargeScreen && styles.contentLarge,
             ]}
             refreshControl={
-                <RefreshControl 
-                    refreshing={refreshing} 
+                <RefreshControl
+                    refreshing={refreshing}
                     onRefresh={onRefresh}
                     tintColor={colors.primary}
                     colors={[colors.primary]}
@@ -278,7 +305,7 @@ const DashboardScreen: React.FC = () => {
                     subtitle="View live sessions"
                     icon={<Ionicons name="flash-outline" size={24} color={colors.primary} />}
                     color={colors.primary}
-                    onPress={() => navigation.navigate('ActiveSessions')}
+                    onPress={() => navigate('ActiveSessions')}
                     delay={500}
                 />
                 <ActionCard
@@ -286,7 +313,7 @@ const DashboardScreen: React.FC = () => {
                     subtitle="Past sessions"
                     icon={<Ionicons name="time-outline" size={24} color={colors.success} />}
                     color={colors.success}
-                    onPress={() => navigation.navigate('SessionHistory')}
+                    onPress={() => navigate('SessionHistory')}
                     delay={600}
                 />
                 <ActionCard
@@ -294,14 +321,14 @@ const DashboardScreen: React.FC = () => {
                     subtitle="Usage analytics"
                     icon={<Ionicons name="trending-up-outline" size={24} color={colors.warning} />}
                     color={colors.warning}
-                    onPress={() => navigation.navigate('Reports')}
+                    onPress={() => navigate('Reports')}
                     delay={700}
                 />
             </View>
 
             {/* Notifications Banner */}
             {unreadCount > 0 && (
-                <Pressable onPress={() => navigation.navigate('Notifications')}>
+                <Pressable onPress={() => navigate('Notifications')}>
                     <Animated.View style={styles.notificationCard}>
                         <View style={styles.notificationBadge}>
                             <Text style={styles.notificationBadgeText}>{unreadCount}</Text>

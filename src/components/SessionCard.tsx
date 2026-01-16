@@ -50,7 +50,7 @@ const SessionCard: React.FC<SessionCardProps> = ({ session, onPress }) => {
                     <View style={styles.detailRow}>
                         <Text style={styles.label}>Activity:</Text>
                         <Text style={styles.activityValue} numberOfLines={1}>
-                            {session.currentActivity}
+                            {session.currentActivity || 'No activity detected'}
                         </Text>
                     </View>
                 </View>
@@ -113,12 +113,13 @@ const styles = StyleSheet.create({
     label: {
         fontSize: 13,
         color: colors.textSecondary,
-        width: 60,
+        width: 80,
     },
     value: {
         fontSize: 13,
         color: colors.textPrimary,
         fontWeight: '500',
+        flex: 1,
     },
     activityValue: {
         fontSize: 13,

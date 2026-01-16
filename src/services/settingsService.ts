@@ -1,7 +1,9 @@
 import { ref, get, set, update } from 'firebase/database';
-import { database, auth } from './firebase';
+import { database, auth, sanitizeFirebaseValue } from './firebase';
 import { Settings, Computer, ComputerRecord } from '../models/types';
 import { DB_PATHS, USER_DATA_PATHS } from '../config/firebase.config';
+import { getComputerStatus } from '../utils/helpers';
+import { toBoolean, ensureBoolean } from '../utils/firebaseHelpers';
 
 // Helper to get current user ID
 const getCurrentUserId = (): string | null => {
@@ -31,7 +33,7 @@ export const settingsService = {
         try {
             const settingsRef = getUserDataRef(USER_DATA_PATHS.settings);
             const snapshot = await get(settingsRef);
-            const data = snapshot.val();
+            let data = snapshot.val();
 
             if (!data) {
                 try {
@@ -42,10 +44,13 @@ export const settingsService = {
                 return DEFAULT_SETTINGS;
             }
 
+            // Sanitize all data to fix string booleans
+            data = sanitizeFirebaseValue(data);
+
             return {
                 sessionTimeLimit: data.sessionTimeLimit || DEFAULT_SETTINGS.sessionTimeLimit,
                 alertThreshold: data.alertThreshold || DEFAULT_SETTINGS.alertThreshold,
-                autoLogoutEnabled: data.autoLogoutEnabled ?? DEFAULT_SETTINGS.autoLogoutEnabled,
+                autoLogoutEnabled: data.autoLogoutEnabled !== undefined ? toBoolean(data.autoLogoutEnabled) : DEFAULT_SETTINGS.autoLogoutEnabled,
             };
         } catch (error: any) {
             if (error?.code === 'PERMISSION_DENIED' || error?.message === 'User not authenticated') {
@@ -63,8 +68,14 @@ export const settingsService = {
     updateSettings: async (settings: Partial<Settings>): Promise<Settings> => {
         try {
             const settingsRef = getUserDataRef(USER_DATA_PATHS.settings);
+            // Ensure boolean fields are properly typed
+            const sanitizedSettings = { ...settings };
+            if (sanitizedSettings.autoLogoutEnabled !== undefined) {
+                sanitizedSettings.autoLogoutEnabled = ensureBoolean(sanitizedSettings.autoLogoutEnabled);
+            }
+            
             await update(settingsRef, {
-                ...settings,
+                ...sanitizedSettings,
                 updatedAt: new Date().toISOString(),
             });
 
@@ -96,7 +107,8 @@ export const settingsService = {
                 id,
                 name: computer.name,
                 ipAddress: computer.ipAddress,
-                status: computer.status || 'offline',
+                // Compute status dynamically based on lastSeen - if PC hasn't reported in 2+ minutes, show as offline
+                status: getComputerStatus(computer.status || 'offline', computer.lastSeen),
                 lastSeen: computer.lastSeen,
             }));
         } catch (error: any) {
@@ -200,7 +212,7 @@ export const settingsService = {
             await set(agentCodeRef, {
                 code,
                 createdAt: new Date().toISOString(),
-                active: true,
+                active: ensureBoolean(true),
             });
 
             // Also write to public agentCodes lookup path for PC agent connection
@@ -210,13 +222,41 @@ export const settingsService = {
                 await set(publicCodeRef, {
                     userId: userId,
                     createdAt: new Date().toISOString(),
-                    active: true,
+                    active: ensureBoolean(true),
                 });
             }
 
             return code;
         } catch (error) {
             console.error('Error regenerating agent code:', error);
+            throw error;
+        }
+    },
+
+    /**
+     * Clear all monitoring data (computers, sessions, history)
+     * Use this when switching accounts or for a fresh start
+     */
+    clearAllMonitoringData: async (): Promise<void> => {
+        try {
+            const userId = getCurrentUserId();
+            if (!userId) throw new Error('User not authenticated');
+
+            // Clear computers
+            const computersRef = ref(database, `users/${userId}/${USER_DATA_PATHS.computers}`);
+            await set(computersRef, null);
+
+            // Clear active sessions
+            const activeSessionsRef = ref(database, `users/${userId}/${USER_DATA_PATHS.sessions.active}`);
+            await set(activeSessionsRef, null);
+
+            // Clear session history
+            const historyRef = ref(database, `users/${userId}/${USER_DATA_PATHS.sessions.history}`);
+            await set(historyRef, null);
+
+            console.log('All monitoring data cleared successfully');
+        } catch (error) {
+            console.error('Error clearing monitoring data:', error);
             throw error;
         }
     },

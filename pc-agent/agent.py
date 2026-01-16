@@ -102,8 +102,34 @@ class PCMonitoringAgent:
             # Sync computer registration first
             self.sync_service.sync_computer_registration(self.computer_id)
             
-            # Sync all data
-            results = self.sync_service.sync_all()
+            # Get current activity from application monitor
+            current_activity = None
+            if self.application_monitor and self.application_monitor.current_app_name:
+                app_info = self.application_monitor.get_current_app_info()
+                app_name = app_info.get('app_name', '')
+                window_title = app_info.get('window_title', '')
+                
+                # Format activity message
+                if window_title:
+                    if 'chrome.exe' in app_name.lower():
+                        current_activity = f"Browsing: {window_title}"
+                    elif 'excel.exe' in app_name.lower():
+                        current_activity = f"Excel: {window_title}"
+                    elif 'winword.exe' in app_name.lower() or 'word' in app_name.lower():
+                        current_activity = f"Word: {window_title}"
+                    elif 'powerpnt.exe' in app_name.lower():
+                        current_activity = f"PowerPoint: {window_title}"
+                    elif 'code.exe' in app_name.lower():
+                        current_activity = f"Coding: {window_title}"
+                    elif 'explorer.exe' in app_name.lower():
+                        current_activity = f"File Explorer: {window_title}"
+                    else:
+                        current_activity = f"{app_name}: {window_title}"
+                else:
+                    current_activity = f"Using {app_name}"
+            
+            # Sync all data with current activity
+            results = self.sync_service.sync_all(current_activity=current_activity)
             
             # Update computer status
             self.sync_service.update_computer_status(self.computer_id, 'online')
@@ -211,17 +237,22 @@ class PCMonitoringAgent:
             if self.session_monitor:
                 self.session_monitor.end_session()
             
-            # Final sync attempt
+            # Final sync attempt - critical to move session to history
             if self.internet_service and self.internet_service.check_connection():
-                logger.info("Performing final sync...")
+                logger.info("Performing final sync to move session to history...")
                 self._perform_sync()
+                # Give sync a moment to complete
+                time.sleep(1)
+                logger.info("Final sync completed")
                 self.sync_service.update_computer_status(self.computer_id, 'offline')
+            else:
+                logger.warning("No internet connection - session will sync on next startup")
             
             # Close database
             if self.database:
                 self.database.close()
             
-            logger.info("Agent stopped")
+            logger.info("Agent stopped - session moved to history")
             
         except Exception as e:
             logger.error(f"Error stopping agent: {e}")

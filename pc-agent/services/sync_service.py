@@ -167,6 +167,81 @@ class SyncService:
             raise ValueError("User ID not set")
         return f"users/{self.user_id}/{path}"
     
+    def _get_latest_activity(self, computer_id: str) -> Optional[str]:
+        """Get the latest application activity for current session"""
+        try:
+            # Get the most recent unsynced application
+            apps = self.database.get_unsynced_applications(limit=1)
+            if apps and len(apps) > 0:
+                app = apps[0]
+                app_name = app.get('application_name', 'Unknown')
+                window_title = app.get('window_title', '')
+                
+                # Format a user-friendly activity message
+                if window_title:
+                    # Clean up common app names
+                    if 'chrome.exe' in app_name.lower():
+                        return f"Browsing: {window_title}"
+                    elif 'excel.exe' in app_name.lower():
+                        return f"Excel: {window_title}"
+                    elif 'winword.exe' in app_name.lower() or 'word' in app_name.lower():
+                        return f"Word: {window_title}"
+                    elif 'powerpnt.exe' in app_name.lower():
+                        return f"PowerPoint: {window_title}"
+                    elif 'code.exe' in app_name.lower():
+                        return f"Coding: {window_title}"
+                    elif 'explorer.exe' in app_name.lower():
+                        return f"File Explorer: {window_title}"
+                    else:
+                        return f"{app_name}: {window_title}"
+                else:
+                    return f"Using {app_name}"
+            
+            return None
+        except Exception as e:
+            logger.debug(f"Error getting latest activity: {e}")
+            return None
+    
+    def _cleanup_stale_active_sessions(self, computer_id: str):
+        """Clean up ALL active sessions for this computer from Firebase on startup"""
+        try:
+            # Get all active sessions from Firebase
+            active_sessions_path = self._get_user_path('sessions/active')
+            active_sessions_ref = self.rtdb.child(active_sessions_path)
+            active_sessions = active_sessions_ref.get()
+            
+            if not active_sessions or not isinstance(active_sessions, dict):
+                logger.info("No active sessions to clean up")
+                return
+            
+            # Delete ALL sessions belonging to this computer
+            # This ensures a fresh start when the agent restarts
+            cleanup_count = 0
+            for session_id, session_data in active_sessions.items():
+                if isinstance(session_data, dict):
+                    session_computer_id = session_data.get('computerId')
+                    
+                    # Check if this session belongs to our computer
+                    if session_computer_id == computer_id:
+                        try:
+                            # Delete this session from Firebase active list
+                            session_ref = self.rtdb.child(f"{active_sessions_path}/{session_id}")
+                            session_ref.delete()
+                            cleanup_count += 1
+                            logger.info(f"Cleaned up stale active session: {session_id}")
+                        except Exception as e:
+                            logger.warning(f"Error deleting session {session_id}: {e}")
+                            continue
+            
+            if cleanup_count > 0:
+                logger.info(f"Cleaned up {cleanup_count} stale active session(s) for this computer")
+            else:
+                logger.info("No stale sessions found for this computer")
+                
+        except Exception as e:
+            logger.warning(f"Error cleaning up stale active sessions: {e}")
+            # Don't fail the whole sync process if cleanup fails
+    
     def sync_computer_registration(self, computer_id: str) -> bool:
         """Sync computer registration to Realtime Database (user-specific path)"""
         try:
@@ -176,6 +251,8 @@ class SyncService:
             
             # Check if already synced
             if self.database.is_computer_synced():
+                # Clean up any stale active sessions for this computer on startup
+                self._cleanup_stale_active_sessions(computer_id)
                 return True
             
             # Get computer info from local database
@@ -202,6 +279,10 @@ class SyncService:
             
             # Mark as synced locally
             self.database.mark_computer_synced()
+            
+            # Clean up any stale active sessions for this computer on first registration
+            self._cleanup_stale_active_sessions(computer_id)
+            
             logger.info(f"Computer registration synced to user {self.user_id[:8]}...: {computer_id}")
             return True
             
@@ -210,56 +291,94 @@ class SyncService:
             self.database.log_error("ComputerSyncError", str(e))
             return False
     
-    def sync_sessions(self) -> int:
+    def sync_sessions(self, current_activity: str = None) -> int:
         """Sync session logs to Realtime Database (user-specific path)"""
         try:
             if not self.initialized:
                 if not self.initialize():
                     return 0
             
-            # Get unsynced sessions
-            sessions = self.database.get_unsynced_sessions(config.SYNC_BATCH_SIZE)
-            if not sessions:
-                return 0
-            
-            synced_ids = []
             computer_id = self.database.get_computer_id()
             
-            for session in sessions:
+            # Get computer name for sessions
+            computer_name = os.environ.get('COMPUTERNAME', 'Unknown')
+            username = os.environ.get('USERNAME', 'Unknown')
+            full_computer_name = f'{computer_name} - {username}'
+            
+            total_synced = 0
+            
+            # 1. Sync active (ongoing) sessions to sessions/active/
+            active_sessions = self.database.get_active_sessions()
+            for session in active_sessions:
                 session_id = f"{computer_id}_{session['id']}"
                 
-                # Determine if session is active or history
-                is_active = session['session_end'] is None
+                # Use provided activity or get from latest application log
+                activity = current_activity or self._get_latest_activity(computer_id) or 'Idle'
                 
                 session_data = {
                     'computerId': session['computer_id'],
-                    'computerName': session.get('computer_name', 'Unknown'),
+                    'computerName': full_computer_name,
                     'userId': session['username'],
                     'userName': session['username'],
                     'startTime': session['session_start'],
-                    'status': 'active' if is_active else 'completed'
+                    'currentActivity': activity,
+                    'status': 'active'
                 }
                 
-                if is_active:
-                    # Active session - users/{userId}/sessions/active/{session_id}
-                    session_data['currentActivity'] = 'Monitoring'
-                    active_path = self._get_user_path(f'sessions/active/{session_id}')
-                    self.rtdb.child(active_path).set(session_data)
-                else:
-                    # Completed session - users/{userId}/sessions/history/{session_id}
-                    session_data['endTime'] = session['session_end']
-                    session_data['totalDuration'] = session['duration_minutes'] * 60  # convert to seconds
-                    session_data['date'] = session['session_start'].split('T')[0]
-                    history_path = self._get_user_path(f'sessions/history/{session_id}')
-                    self.rtdb.child(history_path).set(session_data)
+                active_path = self._get_user_path(f'sessions/active/{session_id}')
+                self.rtdb.child(active_path).set(session_data)
+                total_synced += 1
+            
+            # 2. Sync completed sessions to sessions/history/ and remove from active
+            completed_sessions = self.database.get_unsynced_sessions(config.SYNC_BATCH_SIZE)
+            synced_ids = []
+            
+            if completed_sessions:
+                logger.info(f"Found {len(completed_sessions)} completed session(s) to sync to history")
+            
+            for session in completed_sessions:
+                session_id = f"{computer_id}_{session['id']}"
+                duration = session.get('duration_minutes', 0)
+                
+                logger.info(f"Moving session {session_id} to history (duration: {duration} min)")
+                
+                session_data = {
+                    'computerId': session['computer_id'],
+                    'computerName': full_computer_name,
+                    'userId': session['username'],
+                    'userName': session['username'],
+                    'startTime': session['session_start'],
+                    'endTime': session['session_end'],
+                    'totalDuration': duration,  # in minutes (not seconds)
+                    'date': session['session_start'].split('T')[0],
+                    'status': 'completed'
+                }
+                
+                # Move to history
+                history_path = self._get_user_path(f'sessions/history/{session_id}')
+                self.rtdb.child(history_path).set(session_data)
+                logger.info(f"Session {session_id} added to history")
+                
+                # Remove from active sessions to prevent stale data
+                active_path = self._get_user_path(f'sessions/active/{session_id}')
+                try:
+                    self.rtdb.child(active_path).delete()
+                    logger.info(f"Session {session_id} removed from active")
+                except Exception as e:
+                    # Ignore if doesn't exist
+                    logger.debug(f"Could not delete active session {session_id}: {e}")
                 
                 synced_ids.append(session['id'])
+                total_synced += 1
             
-            # Mark as synced locally
-            self.database.mark_sessions_synced(synced_ids)
+            # Mark completed sessions as synced locally
+            if synced_ids:
+                self.database.mark_sessions_synced(synced_ids)
             
-            logger.info(f"Synced {len(synced_ids)} session logs")
-            return len(synced_ids)
+            if total_synced > 0:
+                logger.info(f"Synced {len(active_sessions)} active and {len(synced_ids)} completed sessions")
+            
+            return total_synced
             
         except Exception as e:
             logger.error(f"Error syncing sessions: {e}")
@@ -351,7 +470,7 @@ class SyncService:
             self.database.log_error("WebsiteSyncError", str(e))
             return 0
     
-    def sync_all(self) -> Dict[str, int]:
+    def sync_all(self, current_activity: str = None) -> Dict[str, int]:
         """Sync all unsynced records with offline handling"""
         results = {
             'sessions': 0,
@@ -389,7 +508,7 @@ class SyncService:
                     return results
             
             # Sync in order
-            results['sessions'] = self.sync_sessions()
+            results['sessions'] = self.sync_sessions(current_activity=current_activity)
             results['applications'] = self.sync_applications()
             results['websites'] = self.sync_websites()
             results['offline'] = False

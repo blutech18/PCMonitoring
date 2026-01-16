@@ -37,6 +37,7 @@ export const USER_DATA_PATHS = {
         history: 'sessions/history',
     },
     activities: 'activities',
+    fileEdits: 'fileEdits',
     websites: 'websites',
     notifications: 'notifications',
     settings: 'settings',

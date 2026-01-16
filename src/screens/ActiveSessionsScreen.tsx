@@ -24,10 +24,44 @@ const ActiveSessionsScreen: React.FC = () => {
     const [loading, setLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
 
-    const fetchSessions = useCallback(async () => {
+    useEffect(() => {
+        const isAdmin = user?.role === 'admin';
+        
+        if (isAdmin) {
+            // Admin: Poll every second for real-time updates
+            const fetchAdminSessions = async () => {
+                try {
+                    const data = await adminService.getAllActiveSessions();
+                    setSessions(data);
+                    setLoading(false);
+                    setRefreshing(false);
+                } catch (error) {
+                    console.error('Error fetching active sessions:', error);
+                    setLoading(false);
+                    setRefreshing(false);
+                }
+            };
+            
+            fetchAdminSessions();
+            const interval = setInterval(fetchAdminSessions, 1000); // Poll every 1 second
+            
+            return () => clearInterval(interval);
+        } else {
+            // Regular user: Use real-time subscription
+            setLoading(false);
+            const unsubscribe = sessionService.subscribeToActiveSessionsFiltered((data) => {
+                setSessions(data);
+                setRefreshing(false);
+            });
+            
+            return () => unsubscribe();
+        }
+    }, [user?.role]);
+
+    const onRefresh = useCallback(async () => {
+        setRefreshing(true);
+        const isAdmin = user?.role === 'admin';
         try {
-            const isAdmin = user?.role === 'admin';
-            // Admin sees all sessions, user sees only their own
             const data = isAdmin 
                 ? await adminService.getAllActiveSessions()
                 : await sessionService.getActiveSessions();
@@ -35,23 +69,9 @@ const ActiveSessionsScreen: React.FC = () => {
         } catch (error) {
             console.error('Error fetching active sessions:', error);
         } finally {
-            setLoading(false);
             setRefreshing(false);
         }
     }, [user?.role]);
-
-    useEffect(() => {
-        fetchSessions();
-
-        // Auto-refresh every 30 seconds
-        const interval = setInterval(fetchSessions, APP_CONFIG.refreshInterval);
-        return () => clearInterval(interval);
-    }, [fetchSessions]);
-
-    const onRefresh = useCallback(() => {
-        setRefreshing(true);
-        fetchSessions();
-    }, [fetchSessions]);
 
     const handleSessionPress = (session: ActiveSession) => {
         navigation.navigate('SessionDetails', { sessionId: session.id });

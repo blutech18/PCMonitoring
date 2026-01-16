@@ -199,6 +199,7 @@ const SettingsScreen: React.FC = () => {
         }
     };
 
+
     if (loading) {
         return <Loading fullScreen message="Loading settings..." />;
     }

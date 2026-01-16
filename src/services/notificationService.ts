@@ -1,7 +1,8 @@
 import { ref, get, update, onValue, off, DataSnapshot } from 'firebase/database';
-import { database, auth } from './firebase';
+import { database, auth, sanitizeFirebaseValue } from './firebase';
 import { Notification } from '../models/types';
 import { USER_DATA_PATHS } from '../config/firebase.config';
+import { toBoolean, ensureBoolean } from '../utils/firebaseHelpers';
 
 // Helper to get current user ID
 const getCurrentUserId = (): string | null => {
@@ -25,20 +26,24 @@ export const notificationService = {
         try {
             const notifRef = getUserDataRef(USER_DATA_PATHS.notifications);
             const snapshot = await get(notifRef);
-            const data = snapshot.val();
+            let data = snapshot.val();
 
             if (!data) return [];
 
+            // Sanitize all data to fix string booleans
+            data = sanitizeFirebaseValue(data);
+
             const notifications: Notification[] = Object.entries(data).map(([id, notif]) => {
                 const notification = notif as Record<string, unknown>;
+                
                 return {
                     id,
                     type: notification.type as Notification['type'],
                     title: notification.title as string,
                     message: notification.message as string,
                     timestamp: notification.timestamp as string,
-                    read: (notification.read as boolean) || false,
-                    acknowledged: (notification.acknowledged as boolean) || false,
+                    read: toBoolean(notification.read),
+                    acknowledged: toBoolean(notification.acknowledged),
                 };
             });
 
@@ -66,22 +71,26 @@ export const notificationService = {
         const notifRef = ref(database, `users/${userId}/${USER_DATA_PATHS.notifications}`);
 
         const listener = (snapshot: DataSnapshot) => {
-            const data = snapshot.val();
+            let data = snapshot.val();
             if (!data) {
                 callback([]);
                 return;
             }
 
+            // Sanitize all data to fix string booleans
+            data = sanitizeFirebaseValue(data);
+
             const notifications: Notification[] = Object.entries(data).map(([id, notif]) => {
                 const notification = notif as Record<string, unknown>;
+                
                 return {
                     id,
                     type: notification.type as Notification['type'],
                     title: notification.title as string,
                     message: notification.message as string,
                     timestamp: notification.timestamp as string,
-                    read: (notification.read as boolean) || false,
-                    acknowledged: (notification.acknowledged as boolean) || false,
+                    read: toBoolean(notification.read),
+                    acknowledged: toBoolean(notification.acknowledged),
                 };
             });
 
@@ -104,13 +113,16 @@ export const notificationService = {
         try {
             const notifRef = getUserDataRef(USER_DATA_PATHS.notifications);
             const snapshot = await get(notifRef);
-            const data = snapshot.val();
+            let data = snapshot.val();
 
             if (!data) return 0;
 
+            // Sanitize all data to fix string booleans
+            data = sanitizeFirebaseValue(data);
+
             return Object.values(data).filter((n) => {
                 const notif = n as Record<string, unknown>;
-                return !notif.read;
+                return !toBoolean(notif.read);
             }).length;
         } catch (error) {
             console.error('Error getting unread count:', error);
@@ -126,7 +138,7 @@ export const notificationService = {
             const userId = getCurrentUserId();
             if (!userId) throw new Error('User not authenticated');
             const notifRef = ref(database, `users/${userId}/${USER_DATA_PATHS.notifications}/${notificationId}`);
-            await update(notifRef, { read: true });
+            await update(notifRef, { read: ensureBoolean(true) });
         } catch (error) {
             console.error('Error marking notification as read:', error);
             throw error;
@@ -142,8 +154,8 @@ export const notificationService = {
             if (!userId) throw new Error('User not authenticated');
             const notifRef = ref(database, `users/${userId}/${USER_DATA_PATHS.notifications}/${notificationId}`);
             await update(notifRef, {
-                acknowledged: true,
-                read: true,
+                acknowledged: ensureBoolean(true),
+                read: ensureBoolean(true),
                 acknowledgedAt: new Date().toISOString(),
                 acknowledgedBy: auth.currentUser?.uid || 'unknown',
             });
@@ -168,7 +180,7 @@ export const notificationService = {
 
             const updates: Record<string, boolean> = {};
             Object.keys(data).forEach(id => {
-                updates[`users/${userId}/${USER_DATA_PATHS.notifications}/${id}/read`] = true;
+                updates[`users/${userId}/${USER_DATA_PATHS.notifications}/${id}/read`] = ensureBoolean(true);
             });
 
             await update(ref(database), updates);

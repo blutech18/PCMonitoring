@@ -39,11 +39,12 @@ const ADMIN_NAV_ITEMS: NavItem[] = [
     { key: 'Settings', label: 'Settings', icon: 'settings' },
 ];
 
-// User sees limited screens (no Reports for now)
+// User sees their own data including Reports
 const USER_NAV_ITEMS: NavItem[] = [
     { key: 'Dashboard', label: 'Dashboard', icon: 'dashboard' },
     { key: 'ActiveSessions', label: 'Active', icon: 'active' },
     { key: 'SessionHistory', label: 'History', icon: 'history' },
+    { key: 'Reports', label: 'Reports', icon: 'reports' },
     { key: 'Notifications', label: 'Alerts', icon: 'alerts' },
     { key: 'Settings', label: 'Settings', icon: 'settings' },
 ];
