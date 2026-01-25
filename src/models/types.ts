@@ -39,7 +39,14 @@ export interface ActiveSession {
     userName: string;
     startTime: string; // ISO date string
     currentActivity: string;
-    status: 'active' | 'idle';
+    status: 'active' | 'idle' | 'paused';
+    pausedAt?: string; // ISO date string - when monitoring was paused
+    /**
+     * The Firebase UID of the user who owns/linked this PC agent.
+     * Used to send commands to the correct user's agent.
+     * This is different from userId which is the Windows username.
+     */
+    ownerUserId?: string;
 }
 
 export interface SessionHistory {
@@ -92,12 +99,14 @@ export interface DashboardStats {
 // Notification types
 export interface Notification {
     id: string;
-    type: 'long_usage' | 'system_issue' | 'network_issue' | 'general';
+    type: 'long_usage' | 'system_issue' | 'network_issue' | 'general' | 'computer_online' | 'monitoring_started';
     title: string;
     message: string;
     timestamp: string;
     read: boolean;
     acknowledged: boolean;
+    computerId?: string;
+    computerName?: string;
 }
 
 // Report types
@@ -170,7 +179,8 @@ export interface ActiveSessionRecord {
     userName: string;
     startTime: string;
     currentActivity: string;
-    status?: 'active' | 'idle';
+    status?: 'active' | 'idle' | 'paused';
+    pausedAt?: string;
 }
 
 export interface SessionHistoryRecord {

@@ -369,13 +369,26 @@ class FirebaseSync:
         self.last_status_update = None
         self.computer_registered = False
         
-        # Use requests for REST API
+        # Use requests for REST API with session for connection pooling
         try:
             import requests
+            from requests.adapters import HTTPAdapter
+            from urllib3.util.retry import Retry
             self.requests = requests
             self.has_requests = True
+            # Create a session with connection pooling and retry strategy for faster requests
+            self.session = requests.Session()
+            retry_strategy = Retry(
+                total=2,
+                backoff_factor=0.1,
+                status_forcelist=[429, 500, 502, 503, 504],
+            )
+            adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=10, pool_maxsize=10)
+            self.session.mount("http://", adapter)
+            self.session.mount("https://", adapter)
         except ImportError:
             self.has_requests = False
+            self.session = None
             self.offline_mode = True
             logger.warning("requests library not available")
     
@@ -391,7 +404,9 @@ class FirebaseSync:
         """GET data from Firebase REST API"""
         url = f"{self.DATABASE_URL}/{path}.json"
         try:
-            response = self.requests.get(url, timeout=10)
+            # Use session if available for connection pooling, otherwise fallback to requests
+            client = self.session if self.session else self.requests
+            response = client.get(url, timeout=10)
             if response.status_code == 200:
                 return response.json()
             else:
@@ -405,7 +420,9 @@ class FirebaseSync:
         """PUT data to Firebase REST API"""
         url = f"{self.DATABASE_URL}/{path}.json"
         try:
-            response = self.requests.put(url, json=data, timeout=10)
+            # Use session if available for connection pooling
+            client = self.session if self.session else self.requests
+            response = client.put(url, json=data, timeout=10)
             return response.status_code == 200
         except Exception as e:
             logger.error(f"Firebase PUT exception: {e}")
@@ -415,10 +432,23 @@ class FirebaseSync:
         """PATCH data to Firebase REST API"""
         url = f"{self.DATABASE_URL}/{path}.json"
         try:
-            response = self.requests.patch(url, json=data, timeout=10)
+            # Use session if available for connection pooling
+            client = self.session if self.session else self.requests
+            response = client.patch(url, json=data, timeout=10)
             return response.status_code == 200
         except Exception as e:
             logger.error(f"Firebase PATCH exception: {e}")
+            return False
+    
+    def _firebase_delete(self, path: str):
+        """DELETE data from Firebase REST API"""
+        url = f"{self.DATABASE_URL}/{path}.json"
+        try:
+            client = self.session if self.session else self.requests
+            response = client.delete(url, timeout=10)
+            return response.status_code == 200
+        except Exception as e:
+            logger.error(f"Firebase DELETE exception: {e}")
             return False
     
     def initialize(self):
@@ -523,8 +553,190 @@ class FirebaseSync:
             logger.error(f"Error clearing active sessions: {e}")
             return False
     
-    def sync_all(self, current_activity: str = None):
-        """Sync all data with offline handling and auto-retry - optimized for real-time"""
+    def clear_computer_sessions(self, computer_id: str):
+        """Clear all active sessions for a specific computer (called on startup to remove stale sessions)"""
+        if not self.user_id:
+            return False
+        
+        if not self.has_requests or self.offline_mode:
+            return False
+        
+        try:
+            sessions_path = f"users/{self.user_id}/sessions/active"
+            url = f"{self.DATABASE_URL}/{sessions_path}.json"
+            response = self.requests.get(url, timeout=10)
+            if response.status_code == 200:
+                sessions = response.json()
+                if sessions:
+                    for session_id, session_data in sessions.items():
+                        if isinstance(session_data, dict) and session_data.get('computerId') == computer_id:
+                            delete_url = f"{self.DATABASE_URL}/{sessions_path}/{session_id}.json"
+                            self.requests.delete(delete_url, timeout=10)
+                            logger.info(f"Cleared stale session {session_id} for computer {computer_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Error clearing computer sessions: {e}")
+            return False
+    
+    def create_notification(self, notif_type: str, title: str, message: str, computer_id: str = None, computer_name: str = None):
+        """Create a notification in Firebase (called when monitoring starts/computer powers on)"""
+        if not self.user_id:
+            logger.warning("Cannot create notification: No user ID")
+            return False
+        
+        if not self.has_requests or self.offline_mode:
+            logger.info("Offline mode - notification will be created when online")
+            return False
+        
+        try:
+            import random
+            import string
+            
+            # Generate unique notification ID
+            random_suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=9))
+            notif_id = f"notif_{int(datetime.now().timestamp() * 1000)}_{random_suffix}"
+            
+            notif_data = {
+                'type': notif_type,
+                'title': title,
+                'message': message,
+                'timestamp': datetime.now().isoformat(),
+                'read': False,
+                'acknowledged': False
+            }
+            
+            if computer_id:
+                notif_data['computerId'] = computer_id
+            if computer_name:
+                notif_data['computerName'] = computer_name
+            
+            notif_path = f"users/{self.user_id}/notifications/{notif_id}"
+            if self._firebase_put(notif_path, notif_data):
+                logger.info(f"Created notification: {title}")
+                return True
+            return False
+        except Exception as e:
+            logger.error(f"Error creating notification: {e}")
+            return False
+    
+    def check_commands(self, computer_id: str, min_timestamp=None):
+        """Check for pending commands from the mobile/web app - optimized for speed.
+        min_timestamp: if provided, ignore commands older than this (to prevent stale command execution on startup)"""
+        if not self.user_id:
+            return None
+        
+        if not self.has_requests or self.offline_mode or not self.session:
+            return None
+        
+        try:
+            from datetime import datetime, timezone
+            commands_path = f"users/{self.user_id}/commands"
+            url = f"{self.DATABASE_URL}/{commands_path}.json"
+            # Use 0.5s timeout - fail fast and retry quickly so start/stop respond fast
+            response = self.session.get(url, timeout=0.5)
+            
+            if response.status_code == 200:
+                commands = response.json()
+                if commands:
+                    logger.info(f"Found {len(commands)} command(s) in queue")
+                    for cmd_id, cmd_data in commands.items():
+                        if isinstance(cmd_data, dict):
+                            cmd_type = cmd_data.get('type')
+                            cmd_computer = cmd_data.get('computerId', '')
+                            cmd_timestamp = cmd_data.get('timestamp', '')
+                            
+                            # Skip commands older than min_timestamp (stale commands)
+                            if min_timestamp and cmd_timestamp:
+                                try:
+                                    cmd_time = datetime.fromisoformat(cmd_timestamp.replace('Z', '+00:00'))
+                                    if cmd_time < min_timestamp:
+                                        # Silently skip stale command - don't log spam
+                                        continue
+                                except Exception:
+                                    pass
+                            
+                            logger.info(f"Command: {cmd_type}, target computer: '{cmd_computer}', this computer: '{computer_id}'")
+                            
+                            # Check if command is for this computer
+                            if cmd_computer == computer_id or cmd_computer == '' or cmd_computer is None:
+                                # Skip if we already processed this command ID
+                                if not hasattr(self, '_processed_cmd_ids'):
+                                    self._processed_cmd_ids = set()
+                                if cmd_id in self._processed_cmd_ids:
+                                    continue
+                                
+                                logger.info(f"*** EXECUTING COMMAND: {cmd_type} for computer: {cmd_computer} ***")
+                                
+                                # Mark as processed BEFORE executing
+                                self._processed_cmd_ids.add(cmd_id)
+                                # Keep set small - only last 100 commands
+                                if len(self._processed_cmd_ids) > 100:
+                                    self._processed_cmd_ids = set(list(self._processed_cmd_ids)[-50:])
+                                
+                                # Delete the command after reading
+                                delete_url = f"{self.DATABASE_URL}/{commands_path}/{cmd_id}.json"
+                                try:
+                                    self.session.delete(delete_url, timeout=1.0)
+                                except Exception as e:
+                                    logger.warning(f"Failed to delete command {cmd_id}: {e}")
+                                
+                                return cmd_type
+                            else:
+                                logger.info(f"Command not for this computer (target: {cmd_computer}, this: {computer_id})")
+            elif response.status_code != 200:
+                logger.warning(f"check_commands: HTTP {response.status_code}")
+            return None
+        except Exception as e:
+            logger.error(f"Error checking commands: {e}")
+            return None
+    
+    def check_session_status(self, computer_id: str) -> str | None:
+        """Get our active session's status from Firebase ('paused' | 'active' | None). Real-time source for pause/resume.
+        When multiple sessions exist for this computer, prefer 'paused' so we always pause when app has paused one."""
+        if not self.user_id or not self.has_requests or self.offline_mode or not self.session:
+            return None
+        try:
+            path = f"users/{self.user_id}/sessions/active"
+            url = f"{self.DATABASE_URL}/{path}.json"
+            r = self.session.get(url, timeout=1.0)
+            if r.status_code != 200:
+                logger.debug(f"check_session_status: HTTP {r.status_code}")
+                return None
+            data = r.json()
+            if not isinstance(data, dict):
+                logger.debug(f"check_session_status: data is not dict: {type(data)}")
+                return None
+            any_active = False
+            logger.info(f"check_session_status: Checking {len(data)} sessions for computer {computer_id}")
+            for _sid, sess in data.items():
+                if not isinstance(sess, dict):
+                    logger.debug(f"check_session_status: Session {_sid} is not a dict, skipping")
+                    continue
+                sess_computer_id = sess.get('computerId')
+                logger.info(f"check_session_status: Session {_sid} computerId='{sess_computer_id}' vs target='{computer_id}'")
+                if sess_computer_id != computer_id:
+                    continue
+                s = (sess.get('status') or 'active').lower()
+                logger.info(f"check_session_status: Found matching session {_sid} with status '{s}'")
+                if s == 'paused':
+                    logger.info(f"check_session_status: Returning 'paused' for computer {computer_id}")
+                    return 'paused'
+                if s == 'active':
+                    any_active = True
+            result = 'active' if any_active else None
+            logger.info(f"check_session_status: Returning '{result}' for computer {computer_id}")
+            return result
+        except Exception as e:
+            logger.error(f"check_session_status error: {e}")
+            return None
+    
+    def sync_all(self, current_activity: str = None, skip_active_check=None, resume_only=False):
+        """Sync all data with offline handling and auto-retry - optimized for real-time.
+        skip_active_check: callable returning bool; when True, skips active-session writes
+        and computer online status update (used when remote stop received to avoid re-adding session).
+        resume_only: when True, only update existing Firebase sessions (currentActivity), never sync
+        local sessions (avoids creating duplicate active sessions when resumed from app pause).
+        """
         self.last_sync_attempt = datetime.now()
         results = {'sessions': 0, 'active_sessions': 0, 'applications': 0, 'file_edits': 0, 'offline': self.offline_mode}
         
@@ -569,23 +781,66 @@ class FirebaseSync:
                 })
                 self.computer_registered = True
             
-            # Sync active sessions (ongoing) to sessions/active/
-            active_sessions = self.database.get_active_sessions()
-            for session in active_sessions:
-                session_id = f"{computer_id}_{session['id']}"
-                session_data = {
-                    'computerId': session['computer_id'],
-                    'computerName': os.environ.get('COMPUTERNAME', 'Unknown'),
-                    'userId': session['username'],
-                    'userName': session['username'],
-                    'startTime': session['session_start'],
-                    'currentActivity': current_activity or 'Idle',
-                    'status': 'active'
-                }
+            # Sync active sessions (ongoing) to sessions/active/ - skip when stopping to avoid "runs again"
+            if not (skip_active_check and skip_active_check()):
+                active_sessions = [] if resume_only else self.database.get_active_sessions()
                 
-                path = f"users/{self.user_id}/sessions/active/{session_id}"
-                if self._firebase_put(path, session_data):
-                    results['active_sessions'] += 1
+                # If no local sessions (resume mode or resume_only), just update existing Firebase sessions with current activity
+                # IMPORTANT: In resume mode, we don't create or overwrite sessions - the app manages startTime
+                if not active_sessions:
+                    try:
+                        sessions_path = f"users/{self.user_id}/sessions/active"
+                        url = f"{self.DATABASE_URL}/{sessions_path}.json"
+                        response = self.session.get(url, timeout=10) if self.session else self.requests.get(url, timeout=10)
+                        if response.status_code == 200 and response.json():
+                            firebase_sessions = response.json()
+                            for fb_session_id, fb_session_data in firebase_sessions.items():
+                                if isinstance(fb_session_data, dict) and fb_session_data.get('computerId') == computer_id:
+                                    # Update ONLY currentActivity - preserve startTime that app adjusted
+                                    update_data = {'currentActivity': current_activity or 'Idle'}
+                                    path = f"users/{self.user_id}/sessions/active/{fb_session_id}"
+                                    if self._firebase_patch(path, update_data):
+                                        results['active_sessions'] += 1
+                                        logger.info(f"Updated existing Firebase session {fb_session_id} with current activity (preserving adjusted startTime)")
+                    except Exception as e:
+                        logger.warning(f"Could not update existing Firebase sessions: {e}")
+                else:
+                    # Has local sessions - check for duplicates before syncing
+                    existing_sessions = set()
+                    try:
+                        sessions_path = f"users/{self.user_id}/sessions/active"
+                        url = f"{self.DATABASE_URL}/{sessions_path}.json"
+                        response = self.session.get(url, timeout=10) if self.session else self.requests.get(url, timeout=10)
+                        if response.status_code == 200 and response.json():
+                            firebase_sessions = response.json()
+                            for fb_session_id, fb_session_data in firebase_sessions.items():
+                                if isinstance(fb_session_data, dict) and fb_session_data.get('computerId') == computer_id:
+                                    existing_sessions.add(fb_session_id)
+                    except Exception as e:
+                        logger.warning(f"Could not fetch existing sessions: {e}")
+                    
+                    for session in active_sessions:
+                        session_id = f"{computer_id}_{session['id']}"
+                        
+                        # Skip syncing if Firebase already has ANY active session for this computer
+                        # This prevents overwriting the adjusted startTime when resuming
+                        if existing_sessions:
+                            logger.info(f"Skipping sync of local session {session_id} - Firebase already has {len(existing_sessions)} active session(s) for this computer (preserving app-adjusted startTime)")
+                            continue
+                        
+                        # Use PATCH to preserve fields like pausedAt that the app may have set
+                        session_data = {
+                            'computerId': session['computer_id'],
+                            'computerName': os.environ.get('COMPUTERNAME', 'Unknown'),
+                            'userId': session['username'],
+                            'userName': session['username'],
+                            'startTime': session['session_start'],
+                            'currentActivity': current_activity or 'Idle',
+                        }
+                        
+                        path = f"users/{self.user_id}/sessions/active/{session_id}"
+                        if self._firebase_patch(path, session_data):
+                            results['active_sessions'] += 1
             
             # Sync completed sessions to sessions/history/
             sessions = self.database.get_unsynced_sessions()
@@ -664,19 +919,19 @@ class FirebaseSync:
             self.database.mark_file_edits_synced(synced_file_ids)
             results['file_edits'] = len(synced_file_ids)
             
-            # Update computer status only every 30 seconds to reduce writes
-            should_update_status = (
-                self.last_status_update is None or
-                (datetime.now() - self.last_status_update).total_seconds() >= 30
-            )
-            
-            if should_update_status or results['sessions'] > 0 or results['applications'] > 0:
-                comp_path = f"users/{self.user_id}/computers/{computer_id}"
-                self._firebase_patch(comp_path, {
-                    'status': 'online',
-                    'lastSeen': datetime.now().isoformat()
-                })
-                self.last_status_update = datetime.now()
+            # Update computer status only every 30 seconds to reduce writes - skip when stopping
+            if not (skip_active_check and skip_active_check()):
+                should_update_status = (
+                    self.last_status_update is None or
+                    (datetime.now() - self.last_status_update).total_seconds() >= 30
+                )
+                if should_update_status or results['sessions'] > 0 or results['applications'] > 0:
+                    comp_path = f"users/{self.user_id}/computers/{computer_id}"
+                    self._firebase_patch(comp_path, {
+                        'status': 'online',
+                        'lastSeen': datetime.now().isoformat()
+                    })
+                    self.last_status_update = datetime.now()
             
             results['offline'] = False
             self.sync_failures = 0
@@ -709,31 +964,76 @@ class MonitoringAgent:
         self.database = database
         self.sync = sync
         self.running = False
+        self.stopping = False  # True when remote stop received - prevents sync from re-adding active session
+        self.resume_mode = False  # True when resumed from app pause - only update existing Firebase, never sync local
         self.current_session_id = None
         self.current_app_log_id = None
         self.last_app = None
         self.current_activity = 'Idle'  # Track current activity for display
         self.computer_id = database.get_computer_id()
         self.tracked_files = set()  # Track files already logged this session
+        self.heartbeat_running = False  # Heartbeat continues even when paused
     
-    def start(self):
+    def start(self, resume=False):
         self.running = True
+        logger.info(f"MonitoringAgent.start() called with resume={resume}")
         
-        # Clear any stale active sessions from Firebase first
-        self.sync.clear_active_sessions()
+        if resume:
+            # Resuming from paused state - don't create any local session
+            # The app already updated the Firebase session to 'active'
+            # We'll just monitor and update the existing Firebase session via sync
+            logger.info("Resume mode: skipping local session creation, will update existing Firebase session")
+            self.resume_mode = True
+            self.current_session_id = None
+        else:
+            # Fresh start - clear stale sessions and create new one
+            logger.info("Fresh start - clearing stale sessions")
+            self.sync.clear_computer_sessions(self.computer_id)
+            
+            self.current_session_id = self.database.log_session_start(
+                self.computer_id,
+                os.environ.get('USERNAME', 'Unknown')
+            )
+            logger.info(f"Monitoring started with new session {self.current_session_id}")
+            
+            # Note: Notification is created by mobile app when it detects computer status change to online
+            # No need to create duplicate notification here
         
-        self.current_session_id = self.database.log_session_start(
-            self.computer_id,
-            os.environ.get('USERNAME', 'Unknown')
-        )
-        logger.info("Monitoring started")
-        
-        # Start monitoring threads
+        # Start monitoring threads (command polling is handled by PCMonitorApp)
+        logger.info("Starting monitoring threads")
         threading.Thread(target=self._monitor_loop, daemon=True).start()
         threading.Thread(target=self._sync_loop, daemon=True).start()
+        
+        # Start heartbeat thread - continues even when paused to keep computer online
+        if not self.heartbeat_running:
+            self.heartbeat_running = True
+            threading.Thread(target=self._heartbeat_loop, daemon=True).start()
+            logger.info("Heartbeat thread started")
+        
+        logger.info("Monitoring threads started successfully")
     
-    def stop(self):
+    def stop(self, pause_only=False):
+        """Stop monitoring.
+        
+        Args:
+            pause_only: If True, just pause monitoring without ending session or marking offline.
+                       The session stays visible as 'paused' in the app. Used for remote stop.
+        """
+        if pause_only:
+            self.stopping = True
         self.running = False
+        
+        if pause_only:
+            # Just stop the monitoring loops, don't end session or mark offline
+            # The mobile app has already marked the session as 'paused'
+            # Heartbeat continues to keep computer online
+            logger.info("Monitoring paused (session stays active, computer stays online, heartbeat continues)")
+            return
+        
+        # Full stop - stop heartbeat too
+        self.heartbeat_running = False
+        
+        # Full stop: end session and mark offline
         if self.current_session_id:
             self.database.log_session_end(self.current_session_id)
         if self.current_app_log_id:
@@ -744,7 +1044,8 @@ class MonitoringAgent:
             import time
             from datetime import datetime
             logger.info("Performing final sync to move session to history...")
-            self.sync.sync_all()
+            # When stopping (e.g. remote stop), skip active-session writes and online status
+            self.sync.sync_all(skip_active_check=lambda: self.stopping)
             # Small delay to ensure sync completes
             time.sleep(0.5)
             # Update computer status to offline
@@ -771,11 +1072,34 @@ class MonitoringAgent:
     def _sync_loop(self):
         while self.running:
             try:
-                results = self.sync.sync_all(current_activity=self.current_activity)
+                # Skip active-session writes when stopping (prevents "runs again" after Stop)
+                self.sync.sync_all(
+                    current_activity=self.current_activity,
+                    skip_active_check=lambda: self.stopping,
+                    resume_only=self.resume_mode
+                )
                 # Logging is now handled inside sync_all for real-time updates
             except Exception as e:
                 logger.error(f"Sync loop error: {e}")
             time.sleep(self.config.get('sync_interval', 5))
+    
+    def _heartbeat_loop(self):
+        """Keep computer online by updating lastSeen every 30 seconds, even when paused"""
+        import time
+        from datetime import datetime
+        
+        while self.heartbeat_running:
+            try:
+                if self.sync and self.sync.user_id:
+                    comp_path = f"users/{self.sync.user_id}/computers/{self.computer_id}"
+                    self.sync._firebase_patch(comp_path, {
+                        'status': 'online',
+                        'lastSeen': datetime.now().isoformat()
+                    })
+                    # Heartbeat updated (silent - no logging to avoid spam)
+            except Exception as e:
+                logger.error(f"Heartbeat error: {e}")
+            time.sleep(30)  # Update every 30 seconds
     
     def _check_foreground_app(self):
         try:
@@ -1093,6 +1417,23 @@ class PCMonitorApp:
         self.root.resizable(False, False)
         self.root.configure(bg=self.COLORS['bg'])
         
+        # Set a simple transparent/blank icon to avoid broken icon display
+        # Create a transparent 1x1 icon
+        try:
+            # Try to set a blank/transparent icon to avoid broken emoji icon in title bar
+            import tempfile
+            import base64
+            # Minimal valid ICO file (1x1 transparent pixel)
+            ico_data = base64.b64decode(
+                b'AAABAAEAAQEAAAEAIAAwAAAAFgAAACgAAAABAAAAAgAAAAEAIAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAP8AAAA='
+            )
+            ico_path = os.path.join(tempfile.gettempdir(), 'pcmonitor_icon.ico')
+            with open(ico_path, 'wb') as f:
+                f.write(ico_data)
+            self.root.iconbitmap(ico_path)
+        except Exception:
+            pass  # Ignore if icon setting fails
+        
         # Configure styles
         self.setup_styles()
         
@@ -1103,12 +1444,18 @@ class PCMonitorApp:
         self.agent = None
         self.monitoring = False
         
+        # Command poller (stop/start from app) - runs when on main screen
+        self._command_poller_active = False
+        self._command_poller_after_id = None
+        
         # Variables
         self.linking_code = tk.StringVar(value=self.config.get('linking_code', ''))
         self.status_text = tk.StringVar(value="Stopped")
         
         # Check if already configured
         if self.config.get('linking_code') and self.config.get('user_id'):
+            # Initialize sync so user_id is set for command polling
+            self.sync.initialize()
             self.create_main_screen()
         else:
             self.create_setup_screen()
@@ -1433,22 +1780,20 @@ class PCMonitorApp:
         btn_frame = tk.Frame(content, bg=self.COLORS['bg'])
         btn_frame.pack(fill=tk.X, pady=(8, 0))
         
-        # Start/Stop button
-        self.start_btn = tk.Button(
-            btn_frame,
-            text="▶  Start Monitoring",
-            command=self.toggle_monitoring,
+        # Monitoring Status Indicator (not a clickable button when monitoring)
+        # Shows "Monitoring Active" status once started - cannot be stopped from agent
+        self.status_indicator_frame = tk.Frame(btn_frame, bg=self.COLORS['success'], bd=0)
+        self.status_indicator_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        self.start_btn = tk.Label(
+            self.status_indicator_frame,
+            text="▶  Starting Monitoring...",
             font=('Segoe UI', 13, 'bold'),
             bg=self.COLORS['success'],
             fg='#FFFFFF',
-            activebackground=self.COLORS['success_light'],
-            activeforeground='#FFFFFF',
-            relief='flat',
-            cursor='hand2',
-            padx=20, pady=14,
-            bd=0
+            padx=20, pady=14
         )
-        self.start_btn.pack(fill=tk.X, pady=(0, 10))
+        self.start_btn.pack(expand=True, fill=tk.BOTH)
         
         # Settings button
         settings_btn = tk.Button(
@@ -1484,29 +1829,94 @@ class PCMonitorApp:
         )
         disconnect_btn.pack(fill=tk.X)
         
-        # Hover effects
-        def on_start_enter(e):
-            if self.monitoring:
-                self.start_btn.config(bg='#B91C1C')  # Darker red
-            else:
-                self.start_btn.config(bg=self.COLORS['success_light'])
-        
-        def on_start_leave(e):
-            if self.monitoring:
-                self.start_btn.config(bg=self.COLORS['error'])
-            else:
-                self.start_btn.config(bg=self.COLORS['success'])
-        
-        self.start_btn.bind('<Enter>', on_start_enter)
-        self.start_btn.bind('<Leave>', on_start_leave)
+        # Hover effects for settings and disconnect buttons only
         settings_btn.bind('<Enter>', lambda e: settings_btn.config(bg=self.COLORS['bg_hover']))
         settings_btn.bind('<Leave>', lambda e: settings_btn.config(bg=self.COLORS['bg_secondary']))
         disconnect_btn.bind('<Enter>', lambda e: disconnect_btn.config(bg=self.COLORS['error_bg']))
         disconnect_btn.bind('<Leave>', lambda e: disconnect_btn.config(bg=self.COLORS['bg_secondary']))
         
-        # Auto-start if configured
-        if self.config.get('auto_start', True):
-            self.root.after(1000, self.start_monitoring)
+        # Auto-start monitoring immediately (monitoring is always on when connected)
+        self.root.after(1000, self.start_monitoring)
+        
+        # Start polling for remote stop/start commands (app can control monitoring)
+        # Poller will start automatically after cleanup completes
+        self.root.after(1500, self._start_command_poller)
+    
+    def _start_command_poller(self):
+        """Start real-time command poller (pause/resume from app)"""
+        self._command_poller_active = True
+        # Record when poller started - ignore ALL commands older than this
+        from datetime import datetime, timezone
+        self._poller_start_time = datetime.now(timezone.utc)
+        logger.info(f"Command poller started at {self._poller_start_time.isoformat()}")
+        self._run_session_status_poller()
+    
+    def _clear_stale_commands(self):
+        """Delete ALL commands from Firebase on startup - they're all stale since we just started"""
+        try:
+            if not self.sync or not self.sync.user_id:
+                return
+            
+            # Delete entire commands node - all commands are stale since we just started
+            # New commands from the app will be created after this
+            commands_path = f"users/{self.sync.user_id}/commands"
+            url = f"{self.sync.DATABASE_URL}/{commands_path}.json"
+            
+            try:
+                response = self.sync.session.delete(url, timeout=2.0)
+                if response.status_code in [200, 204]:
+                    logger.info("Cleared all stale commands on startup")
+                else:
+                    logger.warning(f"Failed to clear commands: HTTP {response.status_code}")
+            except Exception as e:
+                logger.error(f"Error deleting commands: {e}")
+        except Exception as e:
+            logger.error(f"Error clearing stale commands: {e}")
+    
+    def _stop_command_poller(self):
+        """Stop session-status poller (when disconnecting or closing)"""
+        self._command_poller_active = False
+        if self._command_poller_after_id is not None:
+            try:
+                self.root.after_cancel(self._command_poller_after_id)
+            except Exception:
+                pass
+            self._command_poller_after_id = None
+    
+    def _run_session_status_poller(self):
+        """Poll for commands in Firebase for instant pause/resume response."""
+        if not self._command_poller_active:
+            return
+        
+        def check():
+            cmd = None
+            try:
+                cid = self.database.get_computer_id()
+                if self.sync and self.sync.user_id:
+                    # Pass poller start time to filter out stale commands
+                    min_ts = getattr(self, '_poller_start_time', None)
+                    cmd = self.sync.check_commands(cid, min_timestamp=min_ts)
+                    if cmd:
+                        logger.info(f"Poller: Got command '{cmd}'")
+            except Exception as e:
+                logger.error(f"Poller check error: {e}", exc_info=True)
+            finally:
+                self.root.after(0, lambda c=cmd: self._poller_done(c))
+        
+        threading.Thread(target=check, daemon=True).start()
+    
+    def _poller_done(self, cmd):
+        """Handle command on main thread; schedule next poll."""
+        if cmd == 'stop_monitoring' and self.monitoring:
+            logger.info("Got stop_monitoring command – pausing")
+            self._handle_remote_stop()
+        elif cmd == 'start_monitoring' and not self.monitoring:
+            logger.info("Got start_monitoring command – resuming")
+            self._handle_remote_start()
+        
+        if self._command_poller_active:
+            # 100ms polling for responsive commands
+            self._command_poller_after_id = self.root.after(100, self._run_session_status_poller)
     
     def connect_account(self):
         """Validate and save linking code"""
@@ -1554,6 +1964,7 @@ class PCMonitorApp:
         ):
             return
         
+        self._stop_command_poller()
         # Stop monitoring if running
         if self.monitoring:
             self.stop_monitoring()
@@ -1582,47 +1993,88 @@ class PCMonitorApp:
         messagebox.showinfo("Disconnected", "Account disconnected and all data cleared.\nEnter a new linking code to connect to another account.")
     
     def toggle_monitoring(self):
-        if self.monitoring:
-            self.stop_monitoring()
-        else:
+        # Only start monitoring - stopping is no longer available from the agent
+        if not self.monitoring:
             self.start_monitoring()
+
+    def _handle_remote_stop(self):
+        """Handle remote stop: pause monitoring, keep exe running, show Stopped UI"""
+        logger.info("Remote stop – pausing monitoring (exe stays running)")
+        self.stop_monitoring(from_remote=True)
     
-    def start_monitoring(self):
+    def _handle_remote_start(self):
+        """Handle remote start: resume monitoring without creating new session"""
+        logger.info("Remote start – resuming monitoring")
+        try:
+            if not self.monitoring:
+                self.start_monitoring(resume=True)
+                logger.info("start_monitoring(resume=True) completed successfully")
+            else:
+                logger.info("Monitoring already active, updating UI")
+                self._update_ui_monitoring_active()
+        except Exception as e:
+            logger.error(f"Error in _handle_remote_start: {e}", exc_info=True)
+    
+    def start_monitoring(self, resume=False):
         if self.monitoring:
+            logger.info("start_monitoring called but monitoring already active")
             return
         
+        logger.info(f"Creating MonitoringAgent (resume={resume})")
         self.agent = MonitoringAgent(self.config, self.database, self.sync)
-        self.agent.start()
+        logger.info("MonitoringAgent created, calling start()")
+        self.agent.start(resume=resume)
+        logger.info("MonitoringAgent.start() completed")
         self.monitoring = True
         
-        # Update UI with success colors
+        # Update UI with active monitoring status
+        self._update_ui_monitoring_active()
+        logger.info("Monitoring started via GUI" + (" (resumed)" if resume else ""))
+    
+    def _update_ui_monitoring_active(self):
+        """Update UI to show monitoring is active"""
         self.status_label.config(text="Running", fg=self.COLORS['success'])
         self.status_indicator.config(fg=self.COLORS['success'])
-        self.start_btn.config(
-            text="■  Stop Monitoring",
-            bg=self.COLORS['error'],
-            activebackground='#B91C1C'
-        )
-        logger.info("Monitoring started via GUI")
+        self.start_btn.config(text="●  Monitoring Active")
+        self.status_indicator_frame.config(bg=self.COLORS['success'])
+        self.start_btn.config(bg=self.COLORS['success'])
     
-    def stop_monitoring(self):
+    def _update_ui_monitoring_stopped(self, from_remote=False):
+        """Update UI to show monitoring is stopped (exe stays running)"""
+        if from_remote:
+            self.status_label.config(text="Paused", fg=self.COLORS['text_muted'])
+            self.status_indicator.config(fg=self.COLORS['text_muted'])
+            self.start_btn.config(text="⏸  Paused – Start from app to resume")
+        else:
+            self.status_label.config(text="Stopped", fg=self.COLORS['text_muted'])
+            self.status_indicator.config(fg=self.COLORS['text_muted'])
+            self.start_btn.config(text="▶  Start Monitoring")
+        self.status_indicator_frame.config(bg=self.COLORS['bg_secondary'])
+        self.start_btn.config(bg=self.COLORS['bg_secondary'])
+    
+    def stop_monitoring(self, from_remote=False):
+        """Stop monitoring. Keeps exe running. from_remote=True when stopped via app.
+        
+        When from_remote=True (user clicked Stop in app):
+        - Monitoring stops but session stays visible as 'paused'
+        - Computer stays online, exe keeps running
+        - User can click Start in app to resume
+        
+        When from_remote=False (closing app, switching accounts):
+        - Session is ended and moved to history
+        - Computer is marked offline
+        """
         if not self.monitoring:
             return
         
         if self.agent:
-            self.agent.stop()
+            # When stopped from app, just pause (don't end session or mark offline)
+            # The mobile app has already marked the session as 'paused'
+            self.agent.stop(pause_only=from_remote)
             self.agent = None
         self.monitoring = False
-        
-        # Update UI with stopped colors
-        self.status_label.config(text="Stopped", fg=self.COLORS['text'])
-        self.status_indicator.config(fg=self.COLORS['text_muted'])
-        self.start_btn.config(
-            text="▶  Start Monitoring",
-            bg=self.COLORS['success'],
-            activebackground=self.COLORS['success_light']
-        )
-        logger.info("Monitoring stopped via GUI")
+        self._update_ui_monitoring_stopped(from_remote=from_remote)
+        logger.info("Monitoring stopped" + (" (paused via app)" if from_remote else " (full stop)"))
     
     def show_settings(self):
         """Professional settings dialog with white/blue theme"""
@@ -1785,16 +2237,97 @@ class PCMonitorApp:
         disconnect_btn.bind('<Leave>', lambda e: disconnect_btn.config(bg=self.COLORS['bg_secondary']))
     
     def on_close(self):
-        """Handle window close"""
-        if self.monitoring:
-            if messagebox.askyesno(
-                "Minimize?",
-                "Monitoring is running. Minimize to background instead of closing?"
-            ):
-                self.root.withdraw()
-                return
-            self.stop_monitoring()
-        self.root.destroy()
+        """Handle window close - Ensure complete shutdown and PCMonitoringAgent.exe exits.
+        Active sessions for this computer are moved to history (with endTime=now) then removed,
+        so the app no longer shows them as active. Works regardless of paused/running state."""
+        try:
+            # Stop heartbeat immediately to prevent any more updates
+            if self.agent:
+                self.agent.heartbeat_running = False
+            
+            self._stop_command_poller()
+            try:
+                if self.sync and self.sync.user_id:
+                    computer_id = self.database.get_computer_id()
+                    from datetime import datetime
+                    now_iso = datetime.now().isoformat()
+                    
+                    # Use firebase_admin SDK for authenticated access
+                    # REST API returns 401 for protected paths
+                    try:
+                        import firebase_admin
+                        from firebase_admin import credentials, db
+                        
+                        # Check if firebase_admin is already initialized
+                        try:
+                            firebase_admin.get_app()
+                            rtdb = db.reference()
+                            logger.info("Firebase admin already initialized")
+                        except ValueError:
+                            # Initialize firebase_admin with credentials
+                            cred_path = APP_DIR / 'firebase-credentials.json'
+                            if cred_path.exists():
+                                cred = credentials.Certificate(str(cred_path))
+                                firebase_admin.initialize_app(cred, {
+                                    'databaseURL': 'https://pcmonitoring-2178d-default-rtdb.firebaseio.com'
+                                })
+                                rtdb = db.reference()
+                                logger.info("Firebase admin initialized for cleanup")
+                            else:
+                                logger.warning(f"Firebase credentials not found at {cred_path}")
+                                rtdb = None
+                        
+                        if rtdb:
+                            # Delete ALL active sessions for this computer from Firebase
+                            logger.info(f"Cleaning up all active sessions for computer {computer_id}")
+                            
+                            active_sessions_path = f"users/{self.sync.user_id}/sessions/active"
+                            active_sessions_ref = rtdb.child(active_sessions_path)
+                            active_sessions = active_sessions_ref.get()
+                            
+                            if active_sessions and isinstance(active_sessions, dict):
+                                deleted_count = 0
+                                for session_id, session_data in active_sessions.items():
+                                    # Check if this session belongs to our computer
+                                    if isinstance(session_data, dict) and session_data.get('computerId') == computer_id:
+                                        try:
+                                            session_ref = rtdb.child(f"{active_sessions_path}/{session_id}")
+                                            session_ref.delete()
+                                            logger.info(f"Deleted active session {session_id}")
+                                            deleted_count += 1
+                                        except Exception as e:
+                                            logger.error(f"Error deleting session {session_id}: {e}")
+                                logger.info(f"Cleaned up {deleted_count} active session(s) for this computer")
+                            else:
+                                logger.info("No active sessions found in Firebase")
+                            
+                            # Force set offline status
+                            try:
+                                logger.info("Force setting offline status on close...")
+                                computer_path = f"users/{self.sync.user_id}/computers/{computer_id}"
+                                computer_ref = rtdb.child(computer_path)
+                                computer_ref.update({
+                                    'status': 'offline',
+                                    'lastSeen': now_iso
+                                })
+                            except Exception as e:
+                                logger.error(f"Error setting offline status: {e}")
+                    except ImportError:
+                        logger.warning("firebase_admin not available - cannot cleanup sessions")
+                    except Exception as e:
+                        logger.error(f"Error cleaning up active sessions on close: {e}")
+            except Exception as e:
+                logger.error(f"Error in on_close cleanup: {e}")
+
+            if self.monitoring:
+                self.stop_monitoring()
+
+            try:
+                self.root.destroy()
+            except Exception as e:
+                logger.error(f"Error destroying window: {e}")
+        finally:
+            os._exit(0)
     
     def run(self):
         self.root.mainloop()

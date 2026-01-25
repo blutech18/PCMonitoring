@@ -63,10 +63,11 @@
           }
         },
         "notifications": {
+          ".write": "true",
           "$notificationId": {
             ".validate": "newData.hasChildren(['type', 'title', 'message', 'timestamp', 'read', 'acknowledged'])",
             "type": {
-              ".validate": "newData.isString() && (newData.val() === 'long_usage' || newData.val() === 'system_issue' || newData.val() === 'network_issue' || newData.val() === 'general')"
+              ".validate": "newData.isString() && (newData.val() === 'long_usage' || newData.val() === 'system_issue' || newData.val() === 'network_issue' || newData.val() === 'general' || newData.val() === 'computer_online' || newData.val() === 'monitoring_started')"
             },
             "read": {
               ".validate": "newData.isBoolean()"
@@ -90,6 +91,16 @@
         },
         "reports": {
           ".read": "auth != null && auth.uid === $userId"
+        },
+        "commands": {
+          ".read": true,
+          ".write": "auth != null && (auth.uid === $userId || root.child('users').child(auth.uid).child('role').val() === 'admin')",
+          "$commandId": {
+            ".validate": "newData.hasChildren(['type', 'computerId', 'timestamp']) || !newData.exists()",
+            "type": {
+              ".validate": "newData.isString() && (newData.val() === 'stop_monitoring' || newData.val() === 'start_monitoring')"
+            }
+          }
         }
       }
     },

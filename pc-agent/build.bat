@@ -16,7 +16,8 @@ echo Building PCMonitoringAgent.exe...
 echo.
 
 REM Build the executable
-pyinstaller --onefile ^
+REM Build the executable
+python -m PyInstaller --onefile ^
     --name=PCMonitoringAgent ^
     --windowed ^
     --icon=NONE ^

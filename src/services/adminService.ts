@@ -1,7 +1,7 @@
-import { ref, get, query, orderByChild } from 'firebase/database';
+import { ref, get } from 'firebase/database';
 import { database } from './firebase';
-import { User, ActiveSession, SessionHistory, DashboardStats, ActiveSessionRecord, SessionHistoryRecord, Notification } from '../models/types';
-import { DB_PATHS, USER_DATA_PATHS } from '../config/firebase.config';
+import { User, ActiveSession, SessionHistory, DashboardStats } from '../models/types';
+import { DB_PATHS } from '../config/firebase.config';
 import { isComputerOnline } from '../utils/helpers';
 
 /**
@@ -52,7 +52,7 @@ export const adminService = {
             const uniqueUsers = new Set<string>();
 
             // Aggregate data from all users
-            for (const [userId, userData] of Object.entries(usersData)) {
+            for (const [, userData] of Object.entries(usersData)) {
                 const userDataTyped = userData as any;
 
                 // Get computers data to check online status
@@ -70,8 +70,8 @@ export const adminService = {
                     const computerById = computersData[session.computerId];
                     const targetComputer = computerById || computer;
 
-                    if (targetComputer && targetComputer.lastSeen) {
-                        return isComputerOnline(targetComputer.lastSeen);
+                    if (targetComputer?.lastSeen) {
+                        return isComputerOnline(targetComputer.lastSeen, targetComputer.status);
                     }
 
                     return false;
@@ -130,7 +130,7 @@ export const adminService = {
             const allSessions: ActiveSession[] = [];
 
             // Collect sessions from all users
-            for (const [userId, userData] of Object.entries(usersData)) {
+            for (const [firebaseUserId, userData] of Object.entries(usersData)) {
                 const userDataTyped = userData as any;
                 const activeSessions = userDataTyped.sessions?.active || {};
 
@@ -144,6 +144,8 @@ export const adminService = {
                         startTime: session.startTime,
                         currentActivity: session.currentActivity,
                         status: session.status || 'active',
+                        // Include the Firebase UID so we can send commands to the right user
+                        ownerUserId: firebaseUserId,
                     });
                 });
             }
@@ -170,7 +172,7 @@ export const adminService = {
             const allSessions: SessionHistory[] = [];
 
             // Collect sessions from all users
-            for (const [userId, userData] of Object.entries(usersData)) {
+            for (const [, userData] of Object.entries(usersData)) {
                 const userDataTyped = userData as any;
                 const historySessions = userDataTyped.sessions?.history || {};
 

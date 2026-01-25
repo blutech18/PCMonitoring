@@ -1,12 +1,17 @@
 // Utility helper functions
 
 /**
- * Format elapsed time from start time to now
+ * Format elapsed time from start time to now (or to pausedAt if provided)
+ * @param startTime - ISO date string when session started
+ * @param pausedAt - Optional ISO date string when session was paused (freezes time at this point)
  */
-export const formatElapsedTime = (startTime: string): string => {
+export const formatElapsedTime = (startTime: string, pausedAt?: string): string => {
     const start = new Date(startTime);
-    const now = new Date();
-    const diffMs = now.getTime() - start.getTime();
+    // If paused, calculate time up to pausedAt, otherwise up to now
+    const end = pausedAt ? new Date(pausedAt) : new Date();
+    let diffMs = end.getTime() - start.getTime();
+    // Never show negative elapsed (e.g. startTime in future due to timezone bugs)
+    if (diffMs < 0) diffMs = 0;
 
     const hours = Math.floor(diffMs / (1000 * 60 * 60));
     const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
@@ -120,6 +125,8 @@ export const getStatusColor = (status: string): string => {
         case 'idle':
         case 'offline':
             return '#9E9E9E';
+        case 'paused':
+            return '#FF9800';
         case 'maintenance':
             return '#FF9800';
         default:
@@ -133,7 +140,14 @@ export const getStatusColor = (status: string): string => {
  * @param lastSeen - ISO date string of when the computer was last seen
  * @returns true if the computer is considered online
  */
-export const isComputerOnline = (lastSeen: string): boolean => {
+export const isComputerOnline = (lastSeen: string, storedStatus?: unknown): boolean => {
+    // If the stored status explicitly says offline, treat it as offline immediately.
+    // This is important for "Stop Monitoring" where the agent (or app) sets status='offline'
+    // but lastSeen may still be recent.
+    if (typeof storedStatus === 'string' && storedStatus.toLowerCase() === 'offline') {
+        return false;
+    }
+
     if (!lastSeen) return false;
 
     const lastSeenDate = new Date(lastSeen);
@@ -163,6 +177,11 @@ export const getComputerStatus = (
         return 'maintenance';
     }
 
+    // If explicitly offline, keep it offline (don't override with lastSeen)
+    if (storedStatus === 'offline') {
+        return 'offline';
+    }
+
     // For online/offline, compute based on lastSeen
-    return isComputerOnline(lastSeen) ? 'online' : 'offline';
+    return isComputerOnline(lastSeen, storedStatus) ? 'online' : 'offline';
 };

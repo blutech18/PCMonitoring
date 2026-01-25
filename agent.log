@@ -1,0 +1,72 @@
+2026-01-25 13:21:45,720 - __main__ - INFO - ============================================================
+2026-01-25 13:21:45,720 - __main__ - INFO - PC Monitoring Agent - Initializing
+2026-01-25 13:21:45,720 - __main__ - INFO - ============================================================
+2026-01-25 13:21:45,721 - __main__ - INFO - Initializing local database...
+2026-01-25 13:21:45,728 - database - INFO - Database initialized successfully
+2026-01-25 13:21:45,728 - __main__ - INFO - Registering computer...
+2026-01-25 13:21:45,731 - database - INFO - Computer registered with ID: 099ada98-278b-4700-89b7-0d74c46f07d2
+2026-01-25 13:21:45,731 - __main__ - INFO - Computer ID: 099ada98-278b-4700-89b7-0d74c46f07d2
+2026-01-25 13:21:45,731 - __main__ - INFO - Initializing monitors...
+2026-01-25 13:21:45,731 - __main__ - INFO - Initializing services...
+2026-01-25 13:21:45,731 - __main__ - INFO - ============================================================
+2026-01-25 13:21:45,731 - __main__ - INFO - Initialization complete
+2026-01-25 13:21:45,731 - __main__ - INFO - ============================================================
+2026-01-25 13:21:45,731 - __main__ - INFO - Starting monitoring session...
+2026-01-25 13:21:45,735 - monitors.session_monitor - INFO - Session started for user: Acer
+2026-01-25 13:21:45,735 - __main__ - INFO - Starting sync service...
+2026-01-25 13:21:46,720 - services.internet_service - INFO - Internet connection restored
+2026-01-25 13:21:46,721 - __main__ - INFO - Connection restored - triggering sync
+2026-01-25 13:21:48,310 - services.sync_service - ERROR - Firebase credentials not found: firebase-credentials.json
+2026-01-25 13:21:48,323 - services.sync_service - ERROR - Firebase credentials not found: firebase-credentials.json
+2026-01-25 13:21:48,447 - services.sync_service - INFO - Internet connection restored - attempting to reconnect
+2026-01-25 13:21:48,479 - services.sync_service - INFO - Internet connection restored - attempting to reconnect
+2026-01-25 13:21:48,586 - services.sync_service - ERROR - Firebase credentials not found: firebase-credentials.json
+2026-01-25 13:21:48,616 - services.sync_service - ERROR - Firebase credentials not found: firebase-credentials.json
+2026-01-25 13:21:48,616 - __main__ - INFO - Agent started - monitoring active
+2026-01-25 13:21:48,616 - __main__ - INFO - Monitoring interval: 3s
+2026-01-25 13:21:48,616 - __main__ - INFO - Sync interval: 5s
+2026-01-25 13:21:54,518 - services.sync_service - ERROR - Firebase credentials not found: firebase-credentials.json
+2026-01-25 13:21:54,624 - services.sync_service - INFO - Internet connection restored - attempting to reconnect
+2026-01-25 13:21:54,740 - services.sync_service - ERROR - Firebase credentials not found: firebase-credentials.json
+2026-01-25 13:22:00,814 - services.sync_service - ERROR - Firebase credentials not found: firebase-credentials.json
+2026-01-25 13:22:00,869 - services.sync_service - INFO - Internet connection restored - attempting to reconnect
+2026-01-25 13:22:00,922 - services.sync_service - ERROR - Firebase credentials not found: firebase-credentials.json
+2026-01-25 13:22:06,951 - services.sync_service - ERROR - Firebase credentials not found: firebase-credentials.json
+2026-01-25 13:22:07,028 - services.sync_service - INFO - Internet connection restored - attempting to reconnect
+2026-01-25 13:22:07,135 - services.sync_service - ERROR - Firebase credentials not found: firebase-credentials.json
+2026-01-25 13:22:13,154 - services.sync_service - ERROR - Firebase credentials not found: firebase-credentials.json
+2026-01-25 13:22:13,282 - services.sync_service - INFO - Internet connection restored - attempting to reconnect
+2026-01-25 13:22:13,359 - services.sync_service - ERROR - Firebase credentials not found: firebase-credentials.json
+2026-01-25 13:22:19,325 - services.sync_service - ERROR - Firebase credentials not found: firebase-credentials.json
+2026-01-25 13:22:19,383 - services.sync_service - INFO - Internet connection restored - attempting to reconnect
+2026-01-25 13:22:19,486 - services.sync_service - ERROR - Firebase credentials not found: firebase-credentials.json
+2026-01-25 13:22:25,427 - services.sync_service - ERROR - Firebase credentials not found: firebase-credentials.json
+2026-01-25 13:22:25,465 - services.sync_service - INFO - Internet connection restored - attempting to reconnect
+2026-01-25 13:22:25,507 - services.sync_service - ERROR - Firebase credentials not found: firebase-credentials.json
+2026-01-25 13:22:31,481 - services.sync_service - ERROR - Firebase credentials not found: firebase-credentials.json
+2026-01-25 13:22:31,566 - services.sync_service - INFO - Internet connection restored - attempting to reconnect
+2026-01-25 13:22:31,625 - services.sync_service - ERROR - Firebase credentials not found: firebase-credentials.json
+2026-01-25 13:22:37,577 - services.sync_service - ERROR - Firebase credentials not found: firebase-credentials.json
+2026-01-25 13:22:37,681 - services.sync_service - INFO - Internet connection restored - attempting to reconnect
+2026-01-25 13:22:37,740 - services.sync_service - ERROR - Firebase credentials not found: firebase-credentials.json
+2026-01-25 13:22:43,698 - services.sync_service - ERROR - Firebase credentials not found: firebase-credentials.json
+2026-01-25 13:22:43,818 - services.sync_service - INFO - Internet connection restored - attempting to reconnect
+2026-01-25 13:22:43,923 - services.sync_service - ERROR - Firebase credentials not found: firebase-credentials.json
+2026-01-25 13:22:50,030 - services.sync_service - ERROR - Firebase credentials not found: firebase-credentials.json
+2026-01-25 13:22:50,125 - services.sync_service - INFO - Internet connection restored - attempting to reconnect
+2026-01-25 13:22:50,235 - services.sync_service - ERROR - Firebase credentials not found: firebase-credentials.json
+2026-01-25 13:22:56,304 - services.sync_service - ERROR - Firebase credentials not found: firebase-credentials.json
+2026-01-25 13:22:56,441 - services.sync_service - INFO - Internet connection restored - attempting to reconnect
+2026-01-25 13:22:56,536 - services.sync_service - ERROR - Firebase credentials not found: firebase-credentials.json
+2026-01-25 13:23:02,542 - services.sync_service - ERROR - Firebase credentials not found: firebase-credentials.json
+2026-01-25 13:23:02,654 - services.sync_service - INFO - Internet connection restored - attempting to reconnect
+2026-01-25 13:23:02,709 - services.sync_service - ERROR - Firebase credentials not found: firebase-credentials.json
+2026-01-25 13:23:08,774 - services.sync_service - ERROR - Firebase credentials not found: firebase-credentials.json
+2026-01-25 13:23:08,817 - services.sync_service - INFO - Internet connection restored - attempting to reconnect
+2026-01-25 13:23:08,899 - services.sync_service - ERROR - Firebase credentials not found: firebase-credentials.json
+2026-01-25 13:23:14,828 - services.sync_service - ERROR - Firebase credentials not found: firebase-credentials.json
+2026-01-25 13:23:14,941 - services.sync_service - INFO - Internet connection restored - attempting to reconnect
+2026-01-25 13:23:15,043 - services.sync_service - ERROR - Firebase credentials not found: firebase-credentials.json
+2026-01-25 13:23:21,094 - services.sync_service - ERROR - Firebase credentials not found: firebase-credentials.json
+2026-01-25 13:23:21,166 - services.sync_service - INFO - Internet connection restored - attempting to reconnect
+2026-01-25 13:23:21,254 - services.sync_service - ERROR - Firebase credentials not found: firebase-credentials.json

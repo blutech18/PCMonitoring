@@ -205,6 +205,18 @@ class Database:
         ''')
         return [dict(row) for row in cursor.fetchall()]
     
+    def get_active_session(self, computer_id: str) -> Optional[Dict]:
+        """Get the most recent active session for a specific computer"""
+        cursor = self._get_connection().cursor()
+        cursor.execute('''
+            SELECT * FROM session_logs 
+            WHERE computer_id = ? AND session_end IS NULL
+            ORDER BY id DESC
+            LIMIT 1
+        ''', (computer_id,))
+        row = cursor.fetchone()
+        return dict(row) if row else None
+    
     def mark_sessions_synced(self, ids: List[int]):
         """Mark sessions as synced"""
         if not ids:

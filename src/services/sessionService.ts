@@ -1,7 +1,7 @@
-import { ref, get, query, orderByChild, equalTo, onValue, off } from 'firebase/database';
+import { ref, get, onValue, off } from 'firebase/database';
 import { database, auth, sanitizeFirebaseValue } from './firebase';
 import { ActiveSession, SessionHistory, SessionDetail, DashboardStats, ActiveSessionRecord, SessionHistoryRecord, Notification } from '../models/types';
-import { DB_PATHS, USER_DATA_PATHS } from '../config/firebase.config';
+import { USER_DATA_PATHS } from '../config/firebase.config';
 import { getCachedData, setCachedData, CACHE_KEYS } from './cacheService';
 import { isComputerOnline } from '../utils/helpers';
 import { toBoolean } from '../utils/firebaseHelpers';
@@ -44,14 +44,14 @@ export const sessionService = {
                 const computer = Object.values(computersData).find(
                     (c: any) => c.name && session.computerName &&
                         (c.name === session.computerName || c.name.includes(session.computerName))
-                ) as any;
+                );
 
                 // Also check by computerId directly in computersData
                 const computerById = computersData[session.computerId];
                 const targetComputer = computerById || computer;
 
-                if (targetComputer && targetComputer.lastSeen) {
-                    return isComputerOnline(targetComputer.lastSeen);
+                if (targetComputer?.lastSeen) {
+                    return isComputerOnline(targetComputer.lastSeen, targetComputer.status);
                 }
 
                 // If no computer data found, assume offline (stale session)
@@ -102,6 +102,7 @@ export const sessionService = {
      */
     getActiveSessions: async (): Promise<ActiveSession[]> => {
         try {
+            const currentUserId = getCurrentUserId();
             // First get computers data to check online status
             const computersRef = getUserDataRef(USER_DATA_PATHS.computers);
             const computersSnapshot = await get(computersRef);
@@ -126,21 +127,29 @@ export const sessionService = {
                 userName: session.userName,
                 startTime: session.startTime,
                 currentActivity: session.currentActivity,
-                status: session.status || 'active' as const,
+                status: session.status || 'active',
+                pausedAt: session.pausedAt,
+                ownerUserId: currentUserId || undefined,
             }));
 
             // Filter sessions to only include those from computers that are actually online
+            // Exception: Keep paused sessions visible even if computer is offline
             const sessions = allSessions.filter((session) => {
+                // Always show paused sessions (user explicitly paused them)
+                if (session.status === 'paused') {
+                    return true;
+                }
+
                 const computer = Object.values(computersData).find(
                     (c: any) => c.name && session.computerName &&
                         (c.name === session.computerName || c.name.includes(session.computerName))
-                ) as any;
+                );
 
                 const computerById = computersData[session.computerId];
                 const targetComputer = computerById || computer;
 
-                if (targetComputer && targetComputer.lastSeen) {
-                    return isComputerOnline(targetComputer.lastSeen);
+                if (targetComputer?.lastSeen) {
+                    return isComputerOnline(targetComputer.lastSeen, targetComputer.status);
                 }
 
                 // If no computer data found, assume offline (stale session)
@@ -188,6 +197,7 @@ export const sessionService = {
                 startTime: session.startTime,
                 currentActivity: session.currentActivity,
                 status: session.status || 'active',
+                pausedAt: session.pausedAt,
             }));
 
             callback(sessions);
@@ -286,19 +296,19 @@ export const sessionService = {
 
             // Filter and aggregate activities for this session
             const sessionActivities: { [appName: string]: { duration: number; startTime: string; endTime: string } } = {};
-            
+
             Object.entries(activitiesData).forEach(([activityId, activity]: [string, any]) => {
                 // Check if activity belongs to this session's computer
                 if (activityId.startsWith(data.computerId)) {
                     const activityStart = new Date(activity.startTime);
                     const activityEnd = activity.endTime ? new Date(activity.endTime) : new Date();
-                    
+
                     // Check if activity falls within session time range
                     if (activityStart >= startTime && activityStart <= endTime) {
                         const appName = activity.applicationName || 'Unknown';
-                        const durationSecs = activity.durationSeconds || 
+                        const durationSecs = activity.durationSeconds ||
                             Math.floor((activityEnd.getTime() - activityStart.getTime()) / 1000);
-                        
+
                         if (sessionActivities[appName]) {
                             sessionActivities[appName].duration += durationSecs;
                             // Update end time if this activity is later
@@ -400,13 +410,13 @@ export const sessionService = {
                 const computer = Object.values(computersData).find(
                     (c: any) => c.name && session.computerName &&
                         (c.name === session.computerName || c.name.includes(session.computerName))
-                ) as any;
+                );
 
                 const computerById = computersData[session.computerId];
                 const targetComputer = computerById || computer;
 
-                if (targetComputer && targetComputer.lastSeen) {
-                    return isComputerOnline(targetComputer.lastSeen);
+                if (targetComputer?.lastSeen) {
+                    return isComputerOnline(targetComputer.lastSeen, targetComputer.status);
                 }
                 return false;
             });
@@ -497,21 +507,29 @@ export const sessionService = {
                 userName: session.userName,
                 startTime: session.startTime,
                 currentActivity: session.currentActivity,
-                status: session.status || 'active' as const,
+                status: session.status || 'active',
+                pausedAt: session.pausedAt,
+                ownerUserId: userId,
             }));
 
             // Filter sessions by online computers
+            // Exception: Keep paused sessions visible even if computer is offline
             const onlineSessions = allSessions.filter((session) => {
+                // Always show paused sessions (user explicitly paused them)
+                if (session.status === 'paused') {
+                    return true;
+                }
+
                 const computer = Object.values(computersData).find(
                     (c: any) => c.name && session.computerName &&
                         (c.name === session.computerName || c.name.includes(session.computerName))
-                ) as any;
+                );
 
                 const computerById = computersData[session.computerId];
                 const targetComputer = computerById || computer;
 
-                if (targetComputer && targetComputer.lastSeen) {
-                    return isComputerOnline(targetComputer.lastSeen);
+                if (targetComputer?.lastSeen) {
+                    return isComputerOnline(targetComputer.lastSeen, targetComputer.status);
                 }
                 return false;
             });
@@ -540,6 +558,62 @@ export const sessionService = {
         return () => {
             off(computersRef);
             off(sessionsRef);
+            clearInterval(periodicInterval);
+        };
+    },
+
+    /**
+     * Subscribe to computer status changes to detect when computers come online
+     * Triggers notifications when a computer transitions from offline to online
+     */
+    subscribeToComputerStatus: (onComputerOnline: (computerId: string, computerName: string) => void) => {
+        const userId = getCurrentUserId();
+        if (!userId) {
+            return () => { };
+        }
+
+        const computersRef = ref(database, `users/${userId}/${USER_DATA_PATHS.computers}`);
+
+        // Track previous computer states to detect transitions
+        let previousStates: Record<string, boolean> = {};
+        let isFirstLoad = true;
+
+        const checkComputerStatus = (computersData: Record<string, any>) => {
+            const currentStates: Record<string, boolean> = {};
+
+            Object.entries(computersData).forEach(([computerId, computer]: [string, any]) => {
+                const isOnline = computer.lastSeen ? isComputerOnline(computer.lastSeen) : false;
+                currentStates[computerId] = isOnline;
+
+                // Only trigger notification if this is not the first load
+                // and the computer transitioned from offline to online
+                if (!isFirstLoad && isOnline && !previousStates[computerId]) {
+                    const computerName = computer.name || computerId;
+                    onComputerOnline(computerId, computerName);
+                }
+            });
+
+            previousStates = currentStates;
+            isFirstLoad = false;
+        };
+
+        // Listen to computers changes
+        onValue(computersRef, (snapshot) => {
+            const computersData = snapshot.val() || {};
+            checkComputerStatus(computersData);
+        });
+
+        // Also periodically check for time-based online detection
+        const periodicInterval = setInterval(() => {
+            // Re-fetch and check status periodically
+            get(computersRef).then((snapshot) => {
+                const computersData = snapshot.val() || {};
+                checkComputerStatus(computersData);
+            }).catch(() => { });
+        }, 5000); // Check every 5 seconds
+
+        return () => {
+            off(computersRef);
             clearInterval(periodicInterval);
         };
     },

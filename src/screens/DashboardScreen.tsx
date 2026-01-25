@@ -190,6 +190,23 @@ const DashboardScreen: React.FC = () => {
                 setRefreshing(false);
             });
 
+            // Subscribe to computer status changes to trigger notifications
+            const unsubscribeComputerStatus = sessionService.subscribeToComputerStatus(
+                async (computerId, computerName) => {
+                    // Create a notification when a computer comes online
+                    await notificationService.createNotification(
+                        'computer_online',
+                        'Computer Online',
+                        `${computerName} is now active and monitoring has started.`,
+                        computerId,
+                        computerName
+                    );
+                    // Refresh notification count
+                    const notifCount = await notificationService.getUnreadCount();
+                    setUnreadCount(notifCount);
+                }
+            );
+
             // Fetch notification count once (use pull-to-refresh for updates)
             const fetchNotifications = async () => {
                 try {
@@ -203,6 +220,7 @@ const DashboardScreen: React.FC = () => {
 
             return () => {
                 unsubscribeStats();
+                unsubscribeComputerStatus();
             };
         }
     }, [user?.role, fetchAdminData, headerFade]);

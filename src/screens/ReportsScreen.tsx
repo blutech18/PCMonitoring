@@ -8,7 +8,8 @@ import {
     Dimensions,
     RefreshControl,
 } from 'react-native';
-import { LineChart, BarChart } from 'react-native-chart-kit';
+import Svg, { Line, Circle, Rect, Text as SvgText, G, Path } from 'react-native-svg';
+import * as d3Shape from 'd3-shape';
 import reportService from '../services/reportService';
 import { ReportData, ReportPeriod } from '../models/types';
 import Card from '../components/common/Card';
@@ -17,13 +18,187 @@ import colors from '../constants/colors';
 
 const screenWidth = Dimensions.get('window').width;
 
+interface ChartDataPoint {
+    label: string;
+    value: number;
+}
+
+// SVG Line Chart Component
+const SVGLineChart: React.FC<{ data: ChartDataPoint[] }> = ({ data }) => {
+    const width = screenWidth - 96;
+    const height = 200;
+    const padding = { top: 20, right: 20, bottom: 40, left: 40 };
+    const chartWidth = width - padding.left - padding.right;
+    const chartHeight = height - padding.top - padding.bottom;
+
+    const maxValue = Math.max(...data.map(d => d.value), 1);
+    const xStep = chartWidth / (data.length - 1 || 1);
+
+    // Create line path
+    const lineGenerator = d3Shape
+        .line<ChartDataPoint>()
+        .x((d: ChartDataPoint, i: number) => i * xStep)
+        .y((d: ChartDataPoint) => chartHeight - (d.value / maxValue) * chartHeight)
+        .curve(d3Shape.curveMonotoneX);
+
+    const linePath = lineGenerator(data) || '';
+
+    return (
+        <Svg width={width} height={height}>
+            <G x={padding.left} y={padding.top}>
+                {/* Grid lines */}
+                {[0, 0.25, 0.5, 0.75, 1].map((ratio, i) => (
+                    <Line
+                        key={i}
+                        x1={0}
+                        y1={chartHeight * ratio}
+                        x2={chartWidth}
+                        y2={chartHeight * ratio}
+                        stroke={colors.divider}
+                        strokeWidth="1"
+                        strokeDasharray="3,3"
+                    />
+                ))}
+
+                {/* Line */}
+                <Path d={linePath} stroke={colors.primary} strokeWidth="2" fill="none" />
+
+                {/* Data points */}
+                {data.map((point, i) => (
+                    <Circle
+                        key={i}
+                        cx={i * xStep}
+                        cy={chartHeight - (point.value / maxValue) * chartHeight}
+                        r="4"
+                        fill={colors.primary}
+                        stroke={colors.surface}
+                        strokeWidth="2"
+                    />
+                ))}
+
+                {/* X-axis labels */}
+                {data.map((point, i) => (
+                    <SvgText
+                        key={i}
+                        x={i * xStep}
+                        y={chartHeight + 20}
+                        fontSize="10"
+                        fill={colors.textSecondary}
+                        textAnchor="middle"
+                    >
+                        {point.label}
+                    </SvgText>
+                ))}
+
+                {/* Y-axis labels */}
+                {[0, 0.5, 1].map((ratio, i) => (
+                    <SvgText
+                        key={i}
+                        x={-10}
+                        y={chartHeight * (1 - ratio) + 4}
+                        fontSize="10"
+                        fill={colors.textSecondary}
+                        textAnchor="end"
+                    >
+                        {Math.round(maxValue * ratio)}
+                    </SvgText>
+                ))}
+            </G>
+        </Svg>
+    );
+};
+
+// SVG Bar Chart Component
+const SVGBarChart: React.FC<{ data: ChartDataPoint[] }> = ({ data }) => {
+    const width = screenWidth - 96;
+    const height = 200;
+    const padding = { top: 20, right: 20, bottom: 50, left: 40 };
+    const chartWidth = width - padding.left - padding.right;
+    const chartHeight = height - padding.top - padding.bottom;
+
+    const maxValue = Math.max(...data.map(d => d.value), 1);
+    const barWidth = chartWidth / data.length - 10;
+
+    return (
+        <Svg width={width} height={height}>
+            <G x={padding.left} y={padding.top}>
+                {/* Grid lines */}
+                {[0, 0.25, 0.5, 0.75, 1].map((ratio, i) => (
+                    <Line
+                        key={i}
+                        x1={0}
+                        y1={chartHeight * ratio}
+                        x2={chartWidth}
+                        y2={chartHeight * ratio}
+                        stroke={colors.divider}
+                        strokeWidth="1"
+                        strokeDasharray="3,3"
+                    />
+                ))}
+
+                {/* Bars */}
+                {data.map((point, i) => {
+                    const barHeight = (point.value / maxValue) * chartHeight;
+                    const x = (i * chartWidth) / data.length + 5;
+                    const y = chartHeight - barHeight;
+
+                    return (
+                        <G key={i}>
+                            <Rect
+                                x={x}
+                                y={y}
+                                width={barWidth}
+                                height={barHeight}
+                                fill={colors.secondary}
+                                rx="4"
+                            />
+                            <SvgText
+                                x={x + barWidth / 2}
+                                y={chartHeight + 15}
+                                fontSize="9"
+                                fill={colors.textSecondary}
+                                textAnchor="middle"
+                            >
+                                {point.label}
+                            </SvgText>
+                            <SvgText
+                                x={x + barWidth / 2}
+                                y={y - 5}
+                                fontSize="10"
+                                fill={colors.textPrimary}
+                                textAnchor="middle"
+                                fontWeight="600"
+                            >
+                                {point.value}h
+                            </SvgText>
+                        </G>
+                    );
+                })}
+
+                {/* Y-axis labels */}
+                {[0, 0.5, 1].map((ratio, i) => (
+                    <SvgText
+                        key={i}
+                        x={-10}
+                        y={chartHeight * (1 - ratio) + 4}
+                        fontSize="10"
+                        fill={colors.textSecondary}
+                        textAnchor="end"
+                    >
+                        {Math.round(maxValue * ratio)}
+                    </SvgText>
+                ))}
+            </G>
+        </Svg>
+    );
+};
+
 const ReportsScreen: React.FC = () => {
     const [reportData, setReportData] = useState<ReportData | null>(null);
     const [loading, setLoading] = useState(true);
     const [refreshing, setRefreshing] = useState(false);
     const [selectedPeriod, setSelectedPeriod] = useState<ReportPeriod>('weekly');
 
-    // Fetch user-specific report data (each user sees only their own data)
     const fetchReport = useCallback(async () => {
         try {
             const data = await reportService.getReportData(selectedPeriod);
@@ -58,53 +233,34 @@ const ReportsScreen: React.FC = () => {
         );
     }
 
-    const chartConfig = {
-        backgroundColor: colors.surface,
-        backgroundGradientFrom: colors.surface,
-        backgroundGradientTo: colors.surface,
-        decimalPlaces: 0,
-        color: (opacity = 1) => `rgba(25, 118, 210, ${opacity})`,
-        labelColor: () => colors.textSecondary,
-        style: {
-            borderRadius: 16,
-        },
-        propsForDots: {
-            r: '6',
-            strokeWidth: '2',
-            stroke: colors.primary,
-        },
-    };
+    // Transform data for charts
+    const usageTrendData = reportData.usageTrend.slice(-7).map(item => {
+        const date = new Date(item.date);
+        return {
+            label: date.toLocaleDateString('en-US', { weekday: 'short' }),
+            value: Math.max(0, Math.round(item.usage || 0)),
+        };
+    });
 
-    const usageTrendData = reportData.usageTrend.slice(-7);
-    const usageChartData = {
-        labels: usageTrendData.length > 0 
-            ? usageTrendData.map(item => {
-                const date = new Date(item.date);
-                return date.toLocaleDateString('en-US', { weekday: 'short' });
-            })
-            : ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
-        datasets: [
-            {
-                data: usageTrendData.length > 0 
-                    ? usageTrendData.map(item => Math.max(0, item.usage || 0))
-                    : [0, 0, 0, 0, 0, 0, 0],
-            },
-        ],
-    };
+    const usageChartData = usageTrendData.length > 0
+        ? usageTrendData
+        : [
+            { label: 'Mon', value: 0 },
+            { label: 'Tue', value: 0 },
+            { label: 'Wed', value: 0 },
+            { label: 'Thu', value: 0 },
+            { label: 'Fri', value: 0 },
+            { label: 'Sat', value: 0 },
+            { label: 'Sun', value: 0 },
+        ];
 
     const topComputers = reportData.mostUsedComputers.slice(0, 5);
-    const computerUsageData = {
-        labels: topComputers.length > 0
-            ? topComputers.map(c => c.computerName.split(' - ')[1] || c.computerName.substring(0, 6))
-            : ['N/A'],
-        datasets: [
-            {
-                data: topComputers.length > 0
-                    ? topComputers.map(c => Math.max(0, c.totalUsage || 0))
-                    : [0],
-            },
-        ],
-    };
+    const computerUsageData = topComputers.length > 0
+        ? topComputers.map(c => ({
+            label: c.computerName.split(' - ')[1] || c.computerName.substring(0, 8),
+            value: Math.max(0, Math.round(c.totalUsage || 0)),
+        }))
+        : [{ label: 'N/A', value: 0 }];
 
     return (
         <ScrollView
@@ -157,32 +313,18 @@ const ReportsScreen: React.FC = () => {
             <Card style={styles.chartCard}>
                 <Text style={styles.chartTitle}>Usage Trend</Text>
                 <Text style={styles.chartSubtitle}>Hours of usage over time</Text>
-                <LineChart
-                    data={usageChartData}
-                    width={screenWidth - 64}
-                    height={200}
-                    chartConfig={chartConfig}
-                    bezier
-                    style={styles.chart}
-                />
+                <View style={styles.chartContainer}>
+                    <SVGLineChart data={usageChartData} />
+                </View>
             </Card>
 
             {/* Most Used Computers */}
             <Card style={styles.chartCard}>
                 <Text style={styles.chartTitle}>Most Used Computers</Text>
                 <Text style={styles.chartSubtitle}>Total hours by computer</Text>
-                <BarChart
-                    data={computerUsageData}
-                    width={screenWidth - 64}
-                    height={200}
-                    chartConfig={{
-                        ...chartConfig,
-                        color: (opacity = 1) => `rgba(0, 137, 123, ${opacity})`,
-                    }}
-                    style={styles.chart}
-                    yAxisLabel=""
-                    yAxisSuffix="h"
-                />
+                <View style={styles.chartContainer}>
+                    <SVGBarChart data={computerUsageData} />
+                </View>
             </Card>
 
             {/* Top Computers List */}
@@ -283,11 +425,11 @@ const styles = StyleSheet.create({
     chartSubtitle: {
         fontSize: 13,
         color: colors.textSecondary,
-        marginBottom: 16,
+        marginBottom: 8,
     },
-    chart: {
+    chartContainer: {
+        alignItems: 'center',
         marginVertical: 8,
-        borderRadius: 12,
     },
     rankItem: {
         flexDirection: 'row',

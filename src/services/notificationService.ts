@@ -35,7 +35,7 @@ export const notificationService = {
 
             const notifications: Notification[] = Object.entries(data).map(([id, notif]) => {
                 const notification = notif as Record<string, unknown>;
-                
+
                 return {
                     id,
                     type: notification.type as Notification['type'],
@@ -66,7 +66,7 @@ export const notificationService = {
         const userId = getCurrentUserId();
         if (!userId) {
             callback([]);
-            return () => {};
+            return () => { };
         }
         const notifRef = ref(database, `users/${userId}/${USER_DATA_PATHS.notifications}`);
 
@@ -82,7 +82,7 @@ export const notificationService = {
 
             const notifications: Notification[] = Object.entries(data).map(([id, notif]) => {
                 const notification = notif as Record<string, unknown>;
-                
+
                 return {
                     id,
                     type: notification.type as Notification['type'],
@@ -187,6 +187,48 @@ export const notificationService = {
         } catch (error) {
             console.error('Error marking all as read:', error);
             throw error;
+        }
+    },
+
+    /**
+     * Create a new notification (called when computers come online)
+     */
+    createNotification: async (
+        type: Notification['type'],
+        title: string,
+        message: string,
+        computerId?: string,
+        computerName?: string
+    ): Promise<string | null> => {
+        try {
+            const userId = getCurrentUserId();
+            if (!userId) {
+                console.warn('Cannot create notification: User not authenticated');
+                return null;
+            }
+
+            const notifRef = ref(database, `users/${userId}/${USER_DATA_PATHS.notifications}`);
+            const notificationId = `notif_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+            const notificationPath = ref(database, `users/${userId}/${USER_DATA_PATHS.notifications}/${notificationId}`);
+
+            const notificationData: Record<string, any> = {
+                type,
+                title,
+                message,
+                timestamp: new Date().toISOString(),
+                read: false,
+                acknowledged: false,
+            };
+
+            if (computerId) notificationData.computerId = computerId;
+            if (computerName) notificationData.computerName = computerName;
+
+            await update(notificationPath, notificationData);
+            console.log(`Created notification: ${title}`);
+            return notificationId;
+        } catch (error) {
+            console.error('Error creating notification:', error);
+            return null;
         }
     },
 };

@@ -5,6 +5,7 @@ import {
     StyleSheet,
     FlatList,
     RefreshControl,
+    Platform,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -26,7 +27,7 @@ const ActiveSessionsScreen: React.FC = () => {
 
     useEffect(() => {
         const isAdmin = user?.role === 'admin';
-        
+
         if (isAdmin) {
             // Admin: Poll every second for real-time updates
             const fetchAdminSessions = async () => {
@@ -41,10 +42,10 @@ const ActiveSessionsScreen: React.FC = () => {
                     setRefreshing(false);
                 }
             };
-            
+
             fetchAdminSessions();
             const interval = setInterval(fetchAdminSessions, 1000); // Poll every 1 second
-            
+
             return () => clearInterval(interval);
         } else {
             // Regular user: Use real-time subscription
@@ -53,7 +54,7 @@ const ActiveSessionsScreen: React.FC = () => {
                 setSessions(data);
                 setRefreshing(false);
             });
-            
+
             return () => unsubscribe();
         }
     }, [user?.role]);
@@ -62,7 +63,7 @@ const ActiveSessionsScreen: React.FC = () => {
         setRefreshing(true);
         const isAdmin = user?.role === 'admin';
         try {
-            const data = isAdmin 
+            const data = isAdmin
                 ? await adminService.getAllActiveSessions()
                 : await sessionService.getActiveSessions();
             setSessions(data);
@@ -159,11 +160,18 @@ const styles = StyleSheet.create({
         marginVertical: 12,
         borderRadius: 12,
         padding: 16,
-        shadowColor: colors.shadow,
-        shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.08,
-        shadowRadius: 4,
-        elevation: 2,
+        ...Platform.select({
+            web: {
+                boxShadow: `0 2px 4px ${colors.shadow}`,
+            },
+            default: {
+                shadowColor: colors.shadow,
+                shadowOffset: { width: 0, height: 2 },
+                shadowOpacity: 0.08,
+                shadowRadius: 4,
+                elevation: 2,
+            },
+        }),
     },
     statsRow: {
         flexDirection: 'row',

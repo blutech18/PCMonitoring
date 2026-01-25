@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
 import Card from './common/Card';
 import colors from '../constants/colors';
 import { ActiveSession } from '../models/types';
 import { formatElapsedTime, getStatusColor } from '../utils/helpers';
+import commandService from '../services/commandService';
 
 interface SessionCardProps {
     session: ActiveSession;
@@ -11,18 +12,95 @@ interface SessionCardProps {
 }
 
 const SessionCard: React.FC<SessionCardProps> = ({ session, onPress }) => {
-    const [elapsedTime, setElapsedTime] = useState(formatElapsedTime(session.startTime));
+    const [elapsedTime, setElapsedTime] = useState(
+        formatElapsedTime(session.startTime, session.pausedAt)
+    );
+    const [isSending, setIsSending] = useState(false);
 
-    // Update elapsed time every second
+    // Update elapsed time every second (but freeze if paused)
     useEffect(() => {
         const interval = setInterval(() => {
-            setElapsedTime(formatElapsedTime(session.startTime));
+            // If paused, calculate time from startTime to pausedAt (frozen)
+            // If active, calculate time from startTime to now (live)
+            setElapsedTime(formatElapsedTime(session.startTime, session.pausedAt));
         }, 1000);
 
         return () => clearInterval(interval);
-    }, [session.startTime]);
+    }, [session.startTime, session.pausedAt]);
 
     const statusColor = getStatusColor(session.status);
+
+    const isPaused = session.status === 'paused';
+
+    const handleStopMonitoring = async (event?: any) => {
+        event?.stopPropagation?.();
+        event?.preventDefault?.();
+
+        setIsSending(true);
+        try {
+            const targetUser = session.ownerUserId;
+            console.log('Stop monitoring - session:', {
+                id: session.id,
+                computerId: session.computerId,
+                computerName: session.computerName,
+                userId: session.userId,
+                ownerUserId: session.ownerUserId,
+                targetUser,
+            });
+            
+            const success = await commandService.stopMonitoringNow(
+                session.computerId,
+                session.computerName,
+                { targetUserId: targetUser, sessionId: session.id }
+            );
+            
+            if (success) {
+                Alert.alert('Success', 'Session paused.');
+            } else {
+                Alert.alert('Error', 'Failed to pause session.');
+            }
+        } catch (error) {
+            console.error('Stop monitoring failed', error);
+            Alert.alert('Error', `An error occurred: ${error}`);
+        } finally {
+            setIsSending(false);
+        }
+    };
+
+    const handleStartMonitoring = async (event?: any) => {
+        event?.stopPropagation?.();
+        event?.preventDefault?.();
+
+        setIsSending(true);
+        try {
+            const targetUser = session.ownerUserId;
+            console.log('Start monitoring - session:', {
+                id: session.id,
+                computerId: session.computerId,
+                computerName: session.computerName,
+                userId: session.userId,
+                ownerUserId: session.ownerUserId,
+                targetUser,
+            });
+            
+            const success = await commandService.startMonitoringNow(
+                session.computerId,
+                session.computerName,
+                { targetUserId: targetUser, sessionId: session.id }
+            );
+            
+            if (success) {
+                Alert.alert('Success', 'Session resumed.');
+            } else {
+                Alert.alert('Error', 'Failed to resume session.');
+            }
+        } catch (error) {
+            console.error('Start monitoring failed', error);
+            Alert.alert('Error', `An error occurred: ${error}`);
+        } finally {
+            setIsSending(false);
+        }
+    };
 
     return (
         <TouchableOpacity onPress={onPress} activeOpacity={0.7}>
@@ -54,6 +132,36 @@ const SessionCard: React.FC<SessionCardProps> = ({ session, onPress }) => {
                         </Text>
                     </View>
                 </View>
+
+                <View style={styles.divider} />
+
+                {isPaused ? (
+                    <TouchableOpacity
+                        style={[styles.startButton, isSending && styles.buttonDisabled]}
+                        onPress={handleStartMonitoring}
+                        disabled={isSending}
+                        activeOpacity={0.7}
+                    >
+                        {isSending ? (
+                            <ActivityIndicator size="small" color={colors.textLight} />
+                        ) : (
+                            <Text style={styles.startButtonText}>▶ Start Monitoring</Text>
+                        )}
+                    </TouchableOpacity>
+                ) : (
+                    <TouchableOpacity
+                        style={[styles.stopButton, isSending && styles.buttonDisabled]}
+                        onPress={handleStopMonitoring}
+                        disabled={isSending}
+                        activeOpacity={0.7}
+                    >
+                        {isSending ? (
+                            <ActivityIndicator size="small" color={colors.textLight} />
+                        ) : (
+                            <Text style={styles.stopButtonText}>⏸ Pause</Text>
+                        )}
+                    </TouchableOpacity>
+                )}
             </Card>
         </TouchableOpacity>
     );
@@ -101,7 +209,7 @@ const styles = StyleSheet.create({
     divider: {
         height: 1,
         backgroundColor: colors.divider,
-        marginBottom: 12,
+        marginVertical: 12,
     },
     details: {
         gap: 6,
@@ -126,6 +234,35 @@ const styles = StyleSheet.create({
         color: colors.secondary,
         fontWeight: '500',
         flex: 1,
+    },
+    stopButton: {
+        backgroundColor: colors.error,
+        paddingVertical: 10,
+        paddingHorizontal: 16,
+        borderRadius: 8,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    startButton: {
+        backgroundColor: colors.success,
+        paddingVertical: 10,
+        paddingHorizontal: 16,
+        borderRadius: 8,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    buttonDisabled: {
+        opacity: 0.7,
+    },
+    stopButtonText: {
+        color: colors.textLight,
+        fontSize: 14,
+        fontWeight: '600',
+    },
+    startButtonText: {
+        color: colors.textLight,
+        fontSize: 14,
+        fontWeight: '600',
     },
 });
 

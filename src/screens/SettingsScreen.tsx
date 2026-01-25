@@ -7,9 +7,13 @@ import {
     Switch,
     Alert,
     TouchableOpacity,
+    ActivityIndicator,
+    Platform,
 } from 'react-native';
 import { useAuth } from '../context/AuthContext';
 import settingsService from '../services/settingsService';
+import commandService from '../services/commandService';
+
 import { Settings, Computer } from '../models/types';
 import Card from '../components/common/Card';
 import Button from '../components/common/Button';
@@ -29,11 +33,14 @@ const SettingsScreen: React.FC = () => {
     const [agentCode, setAgentCode] = useState<string | null>(null);
     const [regeneratingCode, setRegeneratingCode] = useState(false);
 
+
+
     // Modal states
     const [showPasswordModal, setShowPasswordModal] = useState(false);
     const [showComputerModal, setShowComputerModal] = useState(false);
     const [showNotificationPrefsModal, setShowNotificationPrefsModal] = useState(false);
     const [selectedComputer, setSelectedComputer] = useState<Computer | null>(null);
+    const [sendingStartTo, setSendingStartTo] = useState<string | null>(null);
 
     const fetchData = useCallback(async () => {
         try {
@@ -54,6 +61,11 @@ const SettingsScreen: React.FC = () => {
 
     useEffect(() => {
         fetchData();
+        // Poll for computer status updates every 10 seconds
+        const interval = setInterval(() => {
+            settingsService.getComputers().then(setComputers).catch(console.error);
+        }, 10000);
+        return () => clearInterval(interval);
     }, [fetchData]);
 
     const handleToggleAutoLogout = async (value: boolean) => {
@@ -173,6 +185,23 @@ const SettingsScreen: React.FC = () => {
         );
     };
 
+    const handleStartMonitoring = async (computer: Computer) => {
+        setSendingStartTo(computer.id);
+        try {
+            const ok = await commandService.sendStartCommand(computer.id, computer.name);
+            if (ok) {
+                Alert.alert('Success', `Start command sent to ${computer.name}. The agent will resume monitoring when it receives it.`);
+            } else {
+                Alert.alert('Error', 'Failed to send start command');
+            }
+        } catch (error) {
+            console.error('Start monitoring failed', error);
+            Alert.alert('Error', 'Failed to send start command');
+        } finally {
+            setSendingStartTo(null);
+        }
+    };
+
     const handleRegenerateAgentCode = async () => {
         setRegeneratingCode(true);
         try {
@@ -288,48 +317,69 @@ const SettingsScreen: React.FC = () => {
                     </View>
                 ) : (
                     computers.map((computer, index) => (
-                        <TouchableOpacity
+                        <View
                             key={computer.id}
                             style={[
-                                styles.computerItem,
+                                styles.computerItemWrapper,
                                 index < computers.length - 1 && styles.computerItemBorder,
                             ]}
-                            onPress={() => handleEditComputer(computer)}
-                            onLongPress={() => handleRemoveComputer(computer)}
                         >
-                            <View style={styles.computerInfo}>
-                                <View style={styles.computerNameRow}>
-                                    <View
-                                        style={[
-                                            styles.statusIndicator,
-                                            { backgroundColor: getStatusColor(computer.status) },
-                                        ]}
-                                    />
-                                    <Text style={styles.computerName}>{computer.name}</Text>
-                                </View>
-                                <Text style={styles.computerDetails}>
-                                    {computer.ipAddress} • Last seen: {getRelativeTime(computer.lastSeen)}
-                                </Text>
-                            </View>
-                            <View style={styles.computerActions}>
-                                <View
-                                    style={[
-                                        styles.statusBadge,
-                                        { backgroundColor: `${getStatusColor(computer.status)}20` },
-                                    ]}
-                                >
-                                    <Text
-                                        style={[
-                                            styles.statusText,
-                                            { color: getStatusColor(computer.status) },
-                                        ]}
-                                    >
-                                        {computer.status}
+                            <TouchableOpacity
+                                style={styles.computerItem}
+                                onPress={() => handleEditComputer(computer)}
+                                onLongPress={() => handleRemoveComputer(computer)}
+                            >
+                                <View style={styles.computerInfo}>
+                                    <View style={styles.computerNameRow}>
+                                        <View
+                                            style={[
+                                                styles.statusIndicator,
+                                                { backgroundColor: getStatusColor(computer.status) },
+                                            ]}
+                                        />
+                                        <Text style={styles.computerName}>{computer.name}</Text>
+                                    </View>
+                                    <Text style={styles.computerDetails}>
+                                        {computer.ipAddress} • Last seen: {getRelativeTime(computer.lastSeen)}
                                     </Text>
                                 </View>
-                                <Text style={styles.editHint}>Tap to edit</Text>
-                            </View>
-                        </TouchableOpacity>
+                                <View style={styles.computerActions}>
+                                    <View
+                                        style={[
+                                            styles.statusBadge,
+                                            { backgroundColor: `${getStatusColor(computer.status)}20` },
+                                        ]}
+                                    >
+                                        <Text
+                                            style={[
+                                                styles.statusText,
+                                                { color: getStatusColor(computer.status) },
+                                            ]}
+                                        >
+                                            {computer.status}
+                                        </Text>
+                                    </View>
+                                    {computer.status === 'offline' && (
+                                        <TouchableOpacity
+                                            style={styles.startMonitoringBtn}
+                                            onPress={(e) => {
+                                                if (Platform.OS === 'web') e?.stopPropagation?.();
+                                                handleStartMonitoring(computer);
+                                            }}
+                                            disabled={sendingStartTo === computer.id}
+                                        >
+                                            {sendingStartTo === computer.id ? (
+                                                <ActivityIndicator size="small" color={colors.textLight} />
+                                            ) : (
+                                                <Text style={styles.startMonitoringBtnText}>Start Monitoring</Text>
+                                            )}
+                                        </TouchableOpacity>
+                                    )}
+                                </View>
+                            </TouchableOpacity>
+
+
+                        </View>
                     ))
                 )}
             </Card>
@@ -593,10 +643,12 @@ const styles = StyleSheet.create({
     saveButton: {
         marginTop: 16,
     },
+    computerItemWrapper: {
+        paddingVertical: 12,
+    },
     computerItem: {
         flexDirection: 'row',
         alignItems: 'center',
-        paddingVertical: 12,
     },
     computerItemBorder: {
         borderBottomWidth: 1,
@@ -638,11 +690,22 @@ const styles = StyleSheet.create({
     },
     computerActions: {
         alignItems: 'flex-end',
+        flexDirection: 'row',
+        gap: 8,
     },
-    editHint: {
-        fontSize: 10,
-        color: colors.textMuted,
-        marginTop: 4,
+    startMonitoringBtn: {
+        backgroundColor: colors.primary,
+        paddingHorizontal: 12,
+        paddingVertical: 6,
+        borderRadius: 6,
+        minWidth: 100,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    startMonitoringBtnText: {
+        color: colors.textLight,
+        fontSize: 12,
+        fontWeight: '600',
     },
     menuItem: {
         flexDirection: 'row',
